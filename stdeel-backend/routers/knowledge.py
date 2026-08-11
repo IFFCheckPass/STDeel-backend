@@ -40,7 +40,7 @@ async def list_mastery(db: AsyncSession = Depends(get_db)):
     return result.scalars().all()
 
 
-@router.get("/mastery/{point}", response_model=KnowledgeMasteryOut)
+@router.get("/mastery/{point:path}", response_model=KnowledgeMasteryOut)
 async def get_mastery(point: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(KnowledgeMastery).where(KnowledgeMastery.knowledge_point == point)
@@ -55,7 +55,7 @@ async def get_mastery(point: str, db: AsyncSession = Depends(get_db)):
 async def get_weak_points(threshold: float = 0.5, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(KnowledgeMastery)
-        .where(KnowledgeMastery.error_rate > threshold)
+        .where(KnowledgeMastery.error_rate >= threshold)
         .where(KnowledgeMastery.total_count > 0)
         .order_by(KnowledgeMastery.error_rate.desc())
     )

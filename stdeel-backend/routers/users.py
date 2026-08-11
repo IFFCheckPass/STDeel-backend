@@ -72,7 +72,9 @@ async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.get("/{user_id}/records", response_model=list[SolveRecordOut])
 async def get_user_records(user_id: int, db: AsyncSession = Depends(get_db)):
-    await db.get(User, user_id)
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
     stmt = select(SolveRecord).where(SolveRecord.user_id == user_id).order_by(SolveRecord.created_at.desc())
     result = await db.execute(stmt)
     return result.scalars().all()
@@ -80,6 +82,8 @@ async def get_user_records(user_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.get("/{user_id}/mastery", response_model=list[KnowledgeMasteryOut])
 async def get_user_mastery(user_id: int, db: AsyncSession = Depends(get_db)):
-    await db.get(User, user_id)
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
     result = await db.execute(select(KnowledgeMastery).order_by(KnowledgeMastery.error_rate.desc()))
     return result.scalars().all()
