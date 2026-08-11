@@ -107,51 +107,49 @@ async def match_answer(body: MatchRequest, db: AsyncSession = Depends(get_db)):
         logger.info("精确匹配命中: id=%s", exact_match.id)
         return MatchResult(matched=True, similarity=1.0, answer=exact_match)
 
-    candidates = []
+    seen_ids: set[int] = set()
+    candidates: list[AnswerLibrary] = []
+
+    def _add(records: list[AnswerLibrary]):
+        for r in records:
+            if r.id not in seen_ids:
+                seen_ids.add(r.id)
+                candidates.append(r)
 
     try:
-        fts_query = body.question_text.strip()
-        fts_query = " ".join(fts_query.split())
+        fts_query = " ".join(body.question_text.strip().split())
         fts_sql = text(
             "SELECT al.id FROM answer_library al "
             "JOIN answer_library_fts f ON f.rowid = al.id "
             "WHERE answer_library_fts MATCH :q "
-            "ORDER BY rank LIMIT 10"
+            "ORDER BY rank LIMIT 20"
         ).bindparams(q=fts_query)
         fts_result = await db.execute(fts_sql)
         fts_ids = [row[0] for row in fts_result.fetchall()]
         if fts_ids:
             objs = await db.execute(select(AnswerLibrary).where(AnswerLibrary.id.in_(fts_ids)))
-            candidates.extend(objs.scalars().all())
+            _add(objs.scalars().all())
     except Exception as exc:
         logger.warning("FTS5 查询失败: %s", exc)
 
-    if not candidates:
-        keyword_stmt = select(AnswerLibrary).limit(100)
-        kw_result = await db.execute(keyword_stmt)
-        all_records = kw_result.scalars().all()
-        target = body.question_text
-        target_chars = [c for c in target if len(c.strip()) > 0]
-        if target_chars:
-            keyword = "".join(target_chars[:3]) if len(target_chars) >= 3 else target
-            like_stmt = select(AnswerLibrary).where(AnswerLibrary.question_text.contains(keyword)).limit(10)
+    for n in (5, 4, 3, 2, 1):
+        parts = [c for c in body.question_text if c.strip()]
+        if len(parts) >= n:
+            kw = "".join(parts[:n])
+            like_stmt = select(AnswerLibrary).where(AnswerLibrary.question_text.contains(kw)).limit(10)
             like_result = await db.execute(like_stmt)
-            candidates = like_result.scalars().all()
-            if not candidates:
-                candidates = all_records
+            _add(like_result.scalars().all())
+
+    if len(candidates) < 200:
+        remaining = 200 - len(candidates)
+        full_stmt = select(AnswerLibrary).order_by(AnswerLibrary.created_at.desc()).limit(remaining)
+        full_result = await db.execute(full_stmt)
+        _add(full_result.scalars().all())
 
     if not candidates:
         return MatchResult(matched=False, similarity=0.0, answer=None)
 
-    seen_ids = set()
-    uniq_candidates = []
-    for c in candidates:
-        if c.id not in seen_ids:
-            seen_ids.add(c.id)
-            uniq_candidates.append(c)
-    candidates = uniq_candidates
-
-    best_record = None
+    best_record: AnswerLibrary | None = None
     best_sim = 0.0
     target = body.question_text
     for rec in candidates:

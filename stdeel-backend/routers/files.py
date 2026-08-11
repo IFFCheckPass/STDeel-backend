@@ -3,9 +3,7 @@ import os
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
-from fastapi.responses import FileResponse
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException, UploadFile
 
 from config import UPLOAD_DIR, DOMAIN
 from schemas import FileUploadOut

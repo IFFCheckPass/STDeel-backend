@@ -2,7 +2,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/solve-records", tags=["solve-records"])
 
 
-async def _update_mastery(session: AsyncSession, knowledge_points_str: str, feedback: str):
-    if not knowledge_points_str:
+async def _update_mastery(session: AsyncSession, knowledge_points_str: str, old_feedback: str | None, new_feedback: str | None):
+    if not knowledge_points_str or new_feedback not in ("correct", "wrong"):
         return
     try:
         points = json.loads(knowledge_points_str)
@@ -27,7 +27,21 @@ async def _update_mastery(session: AsyncSession, knowledge_points_str: str, feed
         return
     if not isinstance(points, list):
         return
-    field = KnowledgeMastery.correct_count if feedback == "correct" else KnowledgeMastery.wrong_count
+
+    delta_correct = 0
+    delta_wrong = 0
+    if old_feedback == "correct":
+        delta_correct -= 1
+    elif old_feedback == "wrong":
+        delta_wrong -= 1
+    if new_feedback == "correct":
+        delta_correct += 1
+    elif new_feedback == "wrong":
+        delta_wrong += 1
+
+    if delta_correct == 0 and delta_wrong == 0:
+        return
+
     for point in points:
         existing_result = await session.execute(
             select(KnowledgeMastery).where(KnowledgeMastery.knowledge_point == point)
@@ -37,7 +51,8 @@ async def _update_mastery(session: AsyncSession, knowledge_points_str: str, feed
             existing = KnowledgeMastery(knowledge_point=point, correct_count=0, wrong_count=0, total_count=0, error_rate=0.0)
             session.add(existing)
             await session.flush()
-        setattr(existing, field.name, getattr(existing, field.name) + 1)
+        existing.correct_count = max(0, existing.correct_count + delta_correct)
+        existing.wrong_count = max(0, existing.wrong_count + delta_wrong)
         existing.total_count = existing.correct_count + existing.wrong_count
         existing.error_rate = existing.wrong_count / existing.total_count if existing.total_count > 0 else 0.0
         existing.updated_at = func.now()
@@ -92,9 +107,12 @@ async def update_feedback(record_id: int, body: FeedbackUpdate, db: AsyncSession
     if not record:
         raise HTTPException(status_code=404, detail="记录不存在")
     old_feedback = record.user_feedback
-    record.user_feedback = body.user_feedback
-    if body.user_feedback and body.user_feedback in ("correct", "wrong") and old_feedback != body.user_feedback:
-        await _update_mastery(db, record.knowledge_points, body.user_feedback)
-        await db.flush()
-    logger.info("反馈更新: record=%s, feedback=%s", record_id, body.user_feedback)
+    new_feedback = body.user_feedback
+    if old_feedback == new_feedback:
+        logger.info("反馈更新(未变): record=%s, feedback=%s", record_id, new_feedback)
+        return record
+    await _update_mastery(db, record.knowledge_points, old_feedback, new_feedback)
+    record.user_feedback = new_feedback
+    await db.flush()
+    logger.info("反馈更新: record=%s, feedback=%s", record_id, new_feedback)
     return record
