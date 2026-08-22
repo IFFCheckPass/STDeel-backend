@@ -11,7 +11,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 DOMAIN = os.getenv("APP_DOMAIN", "http://127.0.0.1:8500")
 
-API_PREFIX = "/api/v1"
+API_PREFIX = ""
 
 ALLOWED_ORIGINS = ["*"]
 
