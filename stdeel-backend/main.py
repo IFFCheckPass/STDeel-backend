@@ -10,7 +10,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import API_PREFIX, ALLOWED_ORIGINS, UPLOAD_DIR, LOG_LEVEL
-from database import engine, Base, AsyncSessionLocal
+from database import engine, Base, async_session
 from models import User, AnswerLibrary, SolveRecord, KnowledgeMastery
 from routers import users, solve_records, knowledge, answer_library, files
 
@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
         for stmt in FTS5_SETUP_SQLS:
             await conn.execute(text(stmt))
 
-    async with AsyncSessionLocal() as db:
+    async with async_session() as db:
         sys_id = await _ensure_system_user(db)
         await _migrate_existing_mastery_to_system(db, sys_id)
         await db.commit()
