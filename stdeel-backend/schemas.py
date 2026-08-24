@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class UserRegister(BaseModel):
@@ -13,10 +13,23 @@ class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    user_id: int
     username: str
     device_id: Optional[str] = None
     created_at: datetime
     last_active_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_user_id(cls, data):
+        if hasattr(data, "id") and not hasattr(data, "user_id"):
+            try:
+                data.user_id = data.id
+            except Exception:
+                pass
+        elif isinstance(data, dict) and "id" in data and "user_id" not in data:
+            data["user_id"] = data["id"]
+        return data
 
 
 class UserStats(BaseModel):
@@ -65,7 +78,12 @@ class SolveRecordOut(BaseModel):
 
 
 class FeedbackUpdate(BaseModel):
-    user_feedback: Optional[str] = None
+    user_feedback: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("user_feedback", "feedback"),
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class SolveRecordList(BaseModel):
@@ -96,6 +114,11 @@ class KnowledgeMasteryOut(BaseModel):
     total_count: int
     error_rate: float
     updated_at: datetime
+
+
+class KnowledgeMasteryList(BaseModel):
+    items: List[KnowledgeMasteryOut]
+    total: int
 
 
 class AnswerLibraryCreate(BaseModel):
