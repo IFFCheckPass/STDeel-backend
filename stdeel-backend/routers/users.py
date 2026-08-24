@@ -1,4 +1,5 @@
 import logging
+import secrets
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -7,21 +8,57 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from models import User, SolveRecord, KnowledgeMastery
-from schemas import UserRegister, UserOut, UserStats, UserList, SolveRecordOut, KnowledgeMasteryOut
+from schemas import (
+    UserRegister,
+    UserOut,
+    UserStats,
+    UserList,
+    SolveRecordOut,
+    KnowledgeMasteryItem,
+    KnowledgeMasteryList,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/users", tags=["users"])
 
 
+async def _find_existing_user(db: AsyncSession, body: UserRegister) -> User | None:
+    if body.device_id:
+        result = await db.execute(select(User).where(User.device_id == body.device_id))
+        user = result.scalar_one_or_none()
+        if user:
+            return user
+    if body.username:
+        result = await db.execute(select(User).where(User.username == body.username))
+        user = result.scalar_one_or_none()
+        if user:
+            return user
+    return None
+
+
 @router.post("/register", response_model=UserOut)
 async def register(body: UserRegister, db: AsyncSession = Depends(get_db)):
-    existing = await db.execute(select(User).where(User.username == body.username))
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="用户名已存在")
-    user = User(username=body.username, device_id=body.device_id)
+    existing = await _find_existing_user(db, body)
+    if existing:
+        logger.info("用户复用: id=%s (device_id=%s, username=%s)", existing.id, body.device_id, body.username)
+        if body.device_id and not existing.device_id:
+            existing.device_id = body.device_id
+        return existing
+
+    username = body.username
+    if not username:
+        username = f"anon-{secrets.token_hex(4)}"
+
+    while True:
+        check = await db.execute(select(User).where(User.username == username))
+        if not check.scalar_one_or_none():
+            break
+        username = f"{body.username or 'anon'}-{secrets.token_hex(2)}"
+
+    user = User(username=username, device_id=body.device_id)
     db.add(user)
     await db.flush()
-    logger.info("新用户注册: id=%s, username=%s", user.id, user.username)
+    logger.info("新用户注册: id=%s, username=%s, device_id=%s", user.id, user.username, body.device_id)
     return user
 
 
@@ -80,10 +117,16 @@ async def get_user_records(user_id: int, db: AsyncSession = Depends(get_db)):
     return result.scalars().all()
 
 
-@router.get("/{user_id}/mastery", response_model=list[KnowledgeMasteryOut])
+@router.get("/{user_id}/mastery", response_model=KnowledgeMasteryList)
 async def get_user_mastery(user_id: int, db: AsyncSession = Depends(get_db)):
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
-    result = await db.execute(select(KnowledgeMastery).order_by(KnowledgeMastery.error_rate.desc()))
-    return result.scalars().all()
+    result = await db.execute(
+        select(KnowledgeMastery)
+        .where(KnowledgeMastery.user_id == user_id)
+        .order_by(KnowledgeMastery.error_rate.desc(), KnowledgeMastery.total_count.desc())
+    )
+    rows = result.scalars().all()
+    items = [KnowledgeMasteryItem.model_validate(r) for r in rows]
+    return KnowledgeMasteryList(items=items, total=len(items))
