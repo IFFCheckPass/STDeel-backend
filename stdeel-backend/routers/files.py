@@ -3,9 +3,9 @@ import os
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException, Request, UploadFile
 
-from config import UPLOAD_DIR, DOMAIN
+from config import UPLOAD_DIR
 from schemas import FileUploadOut
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,7 @@ MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
 @router.post("/upload", response_model=FileUploadOut)
-async def upload_file(file: UploadFile):
+async def upload_file(file: UploadFile, request: Request):
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="不支持的文件类型")
@@ -35,6 +35,13 @@ async def upload_file(file: UploadFile):
         f.write(content)
 
     rel_path = f"/uploads/{date_dir}/{filename}"
-    url = f"{DOMAIN}{rel_path}"
-    logger.info("文件上传: %s", rel_path)
+    # 优先从反向代理头读取 (Cloudflare 隧道),否则用 request.url
+    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or request.url.netloc
+    )
+    url = f"{scheme}://{host}{rel_path}"
+    logger.info("文件上传: %s -> %s", rel_path, url)
     return FileUploadOut(path=rel_path, url=url)
