@@ -18,7 +18,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/solve-records", tags=["solve-records"])
 
 
-async def _update_mastery(session: AsyncSession, knowledge_points_str: str, old_feedback: str | None, new_feedback: str | None):
+async def _update_mastery(
+    session: AsyncSession,
+    user_id: int | None,
+    knowledge_points_str: str | None,
+    old_feedback: str | None,
+    new_feedback: str | None,
+) -> None:
     if not knowledge_points_str or new_feedback not in ("correct", "wrong"):
         return
     try:
@@ -44,17 +50,28 @@ async def _update_mastery(session: AsyncSession, knowledge_points_str: str, old_
 
     for point in points:
         existing_result = await session.execute(
-            select(KnowledgeMastery).where(KnowledgeMastery.knowledge_point == point)
+            select(KnowledgeMastery)
+            .where(KnowledgeMastery.user_id == user_id)
+            .where(KnowledgeMastery.knowledge_point == point)
         )
         existing = existing_result.scalar_one_or_none()
         if not existing:
-            existing = KnowledgeMastery(knowledge_point=point, correct_count=0, wrong_count=0, total_count=0, error_rate=0.0)
+            existing = KnowledgeMastery(
+                user_id=user_id,
+                knowledge_point=point,
+                correct_count=0,
+                wrong_count=0,
+                total_count=0,
+                error_rate=0.0,
+            )
             session.add(existing)
             await session.flush()
         existing.correct_count = max(0, existing.correct_count + delta_correct)
         existing.wrong_count = max(0, existing.wrong_count + delta_wrong)
         existing.total_count = existing.correct_count + existing.wrong_count
-        existing.error_rate = existing.wrong_count / existing.total_count if existing.total_count > 0 else 0.0
+        existing.error_rate = (
+            existing.wrong_count / existing.total_count if existing.total_count > 0 else 0.0
+        )
         existing.updated_at = func.now()
 
 
@@ -63,7 +80,7 @@ async def create_record(body: SolveRecordCreate, db: AsyncSession = Depends(get_
     record = SolveRecord(**body.model_dump())
     db.add(record)
     await db.flush()
-    logger.info("解题记录创建: id=%s", record.id)
+    logger.info("解题记录创建: id=%s, user_id=%s", record.id, record.user_id)
     return record
 
 
@@ -111,7 +128,7 @@ async def update_feedback(record_id: int, body: FeedbackUpdate, db: AsyncSession
     if old_feedback == new_feedback:
         logger.info("反馈更新(未变): record=%s, feedback=%s", record_id, new_feedback)
         return record
-    await _update_mastery(db, record.knowledge_points, old_feedback, new_feedback)
+    await _update_mastery(db, record.user_id, record.knowledge_points, old_feedback, new_feedback)
     record.user_feedback = new_feedback
     await db.flush()
     logger.info("反馈更新: record=%s, feedback=%s", record_id, new_feedback)
