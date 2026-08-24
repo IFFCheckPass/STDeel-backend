@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from models import KnowledgeMastery
-from schemas import KnowledgePointCreate, KnowledgePointOut, KnowledgeMasteryOut
+from schemas import KnowledgePointCreate, KnowledgePointOut, KnowledgeMasteryOut, KnowledgeMasteryList
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
@@ -32,12 +32,13 @@ async def create_point(body: KnowledgePointCreate, db: AsyncSession = Depends(ge
     return KnowledgePointOut(id=kp.id, knowledge_point=kp.knowledge_point)
 
 
-@router.get("/mastery", response_model=list[KnowledgeMasteryOut])
+@router.get("/mastery", response_model=KnowledgeMasteryList)
 async def list_mastery(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(KnowledgeMastery).order_by(KnowledgeMastery.error_rate.desc(), KnowledgeMastery.total_count.desc())
     )
-    return result.scalars().all()
+    items = result.scalars().all()
+    return KnowledgeMasteryList(items=items, total=len(items))
 
 
 @router.get("/mastery/{point:path}", response_model=KnowledgeMasteryOut)
@@ -51,7 +52,7 @@ async def get_mastery(point: str, db: AsyncSession = Depends(get_db)):
     return row
 
 
-@router.get("/weak", response_model=list[KnowledgeMasteryOut])
+@router.get("/weak", response_model=KnowledgeMasteryList)
 async def get_weak_points(threshold: float = 0.5, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(KnowledgeMastery)
@@ -59,4 +60,5 @@ async def get_weak_points(threshold: float = 0.5, db: AsyncSession = Depends(get
         .where(KnowledgeMastery.total_count > 0)
         .order_by(KnowledgeMastery.error_rate.desc())
     )
-    return result.scalars().all()
+    items = result.scalars().all()
+    return KnowledgeMasteryList(items=items, total=len(items))
