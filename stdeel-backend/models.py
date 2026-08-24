@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, UniqueConstraint, func
 
 from database import Base
 
@@ -49,9 +49,13 @@ class SolveRecord(Base):
 
 class KnowledgeMastery(Base):
     __tablename__ = "knowledge_mastery"
+    __table_args__ = (
+        UniqueConstraint("user_id", "knowledge_point", name="uq_knowledge_mastery_user_point"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    knowledge_point = Column(String(255), nullable=False, unique=True)
+    user_id = Column(Integer, nullable=True)
+    knowledge_point = Column(String(255), nullable=False)
     correct_count = Column(Integer, default=0)
     wrong_count = Column(Integer, default=0)
     total_count = Column(Integer, default=0)
