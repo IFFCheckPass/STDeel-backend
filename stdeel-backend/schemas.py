@@ -5,7 +5,11 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class UserRegister(BaseModel):
-    username: str
+    """注册请求体: 全部字段可选, device_id 与 username 任一即可, 都不传则生成匿名用户。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    username: Optional[str] = None
     device_id: Optional[str] = None
 
 
@@ -22,7 +26,7 @@ class UserOut(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _populate_user_id(cls, data):
-        if hasattr(data, "id") and not hasattr(data, "user_id"):
+        if hasattr(data, "id") and getattr(data, "user_id", None) is None:
             try:
                 data.user_id = data.id
             except Exception:
@@ -104,21 +108,27 @@ class KnowledgePointOut(BaseModel):
     knowledge_point: str
 
 
-class KnowledgeMasteryOut(BaseModel):
+class KnowledgeMasteryItem(BaseModel):
+    """单个 mastery 记录(支持按 user 维度)"""
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: Optional[int] = None
+    user_id: Optional[int] = None
     knowledge_point: str
-    correct_count: int
-    wrong_count: int
-    total_count: int
-    error_rate: float
-    updated_at: datetime
+    correct_count: int = 0
+    wrong_count: int = 0
+    total_count: int = 0
+    error_rate: float = 0.0
+    updated_at: Optional[datetime] = None
 
 
 class KnowledgeMasteryList(BaseModel):
-    items: List[KnowledgeMasteryOut]
+    items: List[KnowledgeMasteryItem]
     total: int
+
+
+# 兼容旧引用
+KnowledgeMasteryOut = KnowledgeMasteryItem
 
 
 class AnswerLibraryCreate(BaseModel):
