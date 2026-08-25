@@ -1,0 +1,9 @@
+# Python 运行时生成物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 上传的题目图片
+data/
