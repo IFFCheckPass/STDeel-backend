@@ -47,6 +47,23 @@ class SolveRecord(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class UserApiKey(Base):
+    """用户 AI api-key 槽位, 用于跨端同步(账号不变/换机不重配)。"""
+
+    __tablename__ = "user_api_keys"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_user_api_keys_user_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    api_key = Column(Text, nullable=False)
+    name = Column(String(128), nullable=True)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class KnowledgeMastery(Base):
     __tablename__ = "knowledge_mastery"
     __table_args__ = (
