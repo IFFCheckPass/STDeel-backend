@@ -1,8 +1,9 @@
 import json
 import logging
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -86,14 +87,20 @@ async def create_record(body: SolveRecordCreate, db: AsyncSession = Depends(get_
 
 @router.get("", response_model=SolveRecordList)
 async def list_records(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    user_id: int = Query(None),
-    knowledge: str = Query(None),
-    start_date: str = Query(None),
-    end_date: str = Query(None),
+    user_id: int | None = Query(None),
+    correct_days: int = Query(30, ge=1, le=366),
+    wrong_days: int = Query(90, ge=1, le=366),
+    knowledge: str | None = Query(None),
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
+    page: int | None = Query(None, ge=1),
+    page_size: int | None = Query(None, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
 ):
+    """双向同步: 正确记录取近 correct_days 天, 错误记录取近 wrong_days 天, 窗口取并集, 按 created_at 倒序。
+
+    未传 page/page_size 时返回窗口内全部记录, 便于前端全量拉回后本地幂等去重。
+    """
     stmt = select(SolveRecord)
     if user_id is not None:
         stmt = stmt.where(SolveRecord.user_id == user_id)
@@ -103,11 +110,33 @@ async def list_records(
         stmt = stmt.where(SolveRecord.created_at >= start_date)
     if end_date:
         stmt = stmt.where(SolveRecord.created_at <= end_date)
+
+    if user_id is not None:
+        now = datetime.utcnow()
+        window = or_(
+            and_(
+                SolveRecord.user_feedback == "correct",
+                SolveRecord.created_at >= now - timedelta(days=correct_days),
+            ),
+            and_(
+                SolveRecord.user_feedback == "wrong",
+                SolveRecord.created_at >= now - timedelta(days=wrong_days),
+            ),
+        )
+        stmt = stmt.where(window)
+
+    stmt = stmt.order_by(SolveRecord.created_at.desc())
     total_stmt = select(func.count()).select_from(stmt.subquery())
     total = await db.execute(total_stmt)
-    items_stmt = stmt.order_by(SolveRecord.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
-    items = await db.execute(items_stmt)
-    return SolveRecordList(items=items.scalars().all(), total=total.scalar_one(), page=page, page_size=page_size)
+    if page is not None and page_size is not None:
+        stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+    items = await db.execute(stmt)
+    return SolveRecordList(
+        items=items.scalars().all(),
+        total=total.scalar_one(),
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/{record_id}", response_model=SolveRecordOut)
