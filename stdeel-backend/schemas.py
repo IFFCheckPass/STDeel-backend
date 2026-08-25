@@ -1,7 +1,8 @@
+import json
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class UserRegister(BaseModel):
@@ -62,6 +63,14 @@ class SolveRecordCreate(BaseModel):
     matched: bool = False
     image_path: Optional[str] = None
 
+    @field_validator("knowledge_points", mode="before")
+    @classmethod
+    def _jsonify_knowledge_points(cls, v):
+        """兼容: 前端若传数组, 落库前序列化为 JSON 字符串。"""
+        if isinstance(v, (list, tuple)):
+            return json.dumps(v, ensure_ascii=False)
+        return v
+
 
 class SolveRecordOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -71,7 +80,7 @@ class SolveRecordOut(BaseModel):
     question_text: str
     answer: Optional[str] = None
     solution: Optional[str] = None
-    knowledge_points: Optional[str] = None
+    knowledge_points: Optional[List[str]] = None
     ai_model: Optional[str] = None
     latency_ms: Optional[int] = None
     tokens_used: Optional[int] = None
@@ -79,6 +88,17 @@ class SolveRecordOut(BaseModel):
     user_feedback: Optional[str] = None
     image_path: Optional[str] = None
     created_at: datetime
+
+    @field_validator("knowledge_points", mode="before")
+    @classmethod
+    def _parse_knowledge_points(cls, v):
+        """把库中的 JSON 字符串解析为数组, 供前端直接消费。"""
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return v
 
 
 class FeedbackUpdate(BaseModel):
@@ -93,8 +113,8 @@ class FeedbackUpdate(BaseModel):
 class SolveRecordList(BaseModel):
     items: List[SolveRecordOut]
     total: int
-    page: int
-    page_size: int
+    page: Optional[int] = None
+    page_size: Optional[int] = None
 
 
 class KnowledgePointCreate(BaseModel):
@@ -182,3 +202,24 @@ class MatchResult(BaseModel):
 class FileUploadOut(BaseModel):
     path: str
     url: str
+
+
+class ApiKeyUpsert(BaseModel):
+    """用户 api-key 槽位写入/更新。"""
+
+    user_id: int
+    api_key: str
+    name: Optional[str] = None
+    enabled: Optional[bool] = True
+
+
+class ApiKeyOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    api_key: str
+    name: Optional[str] = None
+    enabled: bool = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
