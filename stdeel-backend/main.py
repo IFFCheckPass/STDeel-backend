@@ -77,6 +77,8 @@ async def lifespan(app: FastAPI):
     logger.info("正在初始化数据库...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 迁移: 去掉 user_api_keys 单槽位唯一索引(从一用户一 key 升级为一用户多 key)
+        await conn.execute(text("DROP INDEX IF EXISTS uq_user_api_keys_user_id"))
         for stmt in FTS5_SETUP_SQLS:
             await conn.execute(text(stmt))
 

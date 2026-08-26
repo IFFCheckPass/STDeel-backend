@@ -3,7 +3,7 @@ import secrets
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -16,7 +16,7 @@ from schemas import (
     SolveRecordOut,
     KnowledgeMasteryItem,
     KnowledgeMasteryList,
-    ApiKeyUpsert,
+    ApiKeyBatchUpsert,
     ApiKeyOut,
 )
 
@@ -101,32 +101,33 @@ async def list_users(
     return UserList(items=items.scalars().all(), total=total.scalar_one(), page=page, page_size=page_size)
 
 
-@router.put("/api-key", response_model=ApiKeyOut)
-async def upsert_api_key(body: ApiKeyUpsert, db: AsyncSession = Depends(get_db)):
-    """开设/更新该用户的 api-key 槽位(单槽位, 重复 PUT 即覆盖)。"""
+@router.put("/api-key", response_model=list[ApiKeyOut])
+async def upsert_api_keys(body: ApiKeyBatchUpsert, db: AsyncSession = Depends(get_db)):
+    """全量覆盖该用户的 api-key 列表(跨端同步: 前端上报以此为准, 旧 key 全部替换)。"""
     user = await db.get(User, body.user_id)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
-    result = await db.execute(select(UserApiKey).where(UserApiKey.user_id == body.user_id))
-    row = result.scalar_one_or_none()
-    if row:
-        row.api_key = body.api_key
-        if body.name is not None:
-            row.name = body.name
-        if body.enabled is not None:
-            row.enabled = body.enabled
-        row.updated_at = func.now()
-    else:
-        row = UserApiKey(
-            user_id=body.user_id,
-            api_key=body.api_key,
-            name=body.name,
-            enabled=body.enabled if body.enabled is not None else True,
+    if not body.api_keys:
+        raise HTTPException(status_code=422, detail="api_keys 不能为空")
+    await db.execute(delete(UserApiKey).where(UserApiKey.user_id == body.user_id))
+    for item in body.api_keys:
+        db.add(
+            UserApiKey(
+                user_id=body.user_id,
+                api_key=item.api_key,
+                name=item.name,
+                enabled=item.enabled if item.enabled is not None else True,
+            )
         )
-        db.add(row)
     await db.flush()
-    logger.info("api-key 写入: user_id=%s, has_key=%s", body.user_id, bool(body.api_key))
-    return row
+    result = await db.execute(
+        select(UserApiKey)
+        .where(UserApiKey.user_id == body.user_id)
+        .order_by(UserApiKey.id)
+    )
+    rows = result.scalars().all()
+    logger.info("api-key 全量覆盖: user_id=%s, count=%s", body.user_id, len(rows))
+    return rows
 
 
 @router.get("/api-key", response_model=list[ApiKeyOut])

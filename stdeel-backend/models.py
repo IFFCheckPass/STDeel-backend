@@ -48,12 +48,9 @@ class SolveRecord(Base):
 
 
 class UserApiKey(Base):
-    """用户 AI api-key 槽位, 用于跨端同步(账号不变/换机不重配)。"""
+    """用户 AI api-key(跨端同步: 账号不变/换机不重配, 一用户多 key)。"""
 
     __tablename__ = "user_api_keys"
-    __table_args__ = (
-        UniqueConstraint("user_id", name="uq_user_api_keys_user_id"),
-    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, nullable=False, index=True)

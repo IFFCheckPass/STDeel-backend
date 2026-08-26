@@ -204,13 +204,30 @@ class FileUploadOut(BaseModel):
     url: str
 
 
-class ApiKeyUpsert(BaseModel):
-    """用户 api-key 槽位写入/更新。"""
+class ApiKeyItem(BaseModel):
+    """单个 api-key 条目。"""
 
-    user_id: int
     api_key: str
     name: Optional[str] = None
     enabled: Optional[bool] = True
+
+
+class ApiKeyBatchUpsert(BaseModel):
+    """批量上报该用户的 api-key 列表(全量覆盖, 对齐前端 {user_id, api_keys})。"""
+
+    user_id: int
+    api_keys: List[ApiKeyItem] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_api_keys(cls, data):
+        """兼容: api_keys 元素既可是 {api_key,...} 对象, 也可是纯字符串 key。"""
+        if isinstance(data, dict) and isinstance(data.get("api_keys"), list):
+            data["api_keys"] = [
+                ({"api_key": k} if isinstance(k, str) else k)
+                for k in data["api_keys"]
+            ]
+        return data
 
 
 class ApiKeyOut(BaseModel):
