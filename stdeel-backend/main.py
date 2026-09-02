@@ -4,12 +4,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import API_PREFIX, ALLOWED_ORIGINS, UPLOAD_DIR, LOG_LEVEL
+from config import API_PREFIX, ALLOWED_ORIGINS, UPLOAD_DIR, LOG_LEVEL, BASE_DIR
 from database import engine, Base, async_session
 from models import User, AnswerLibrary, SolveRecord, KnowledgeMastery
 from routers import users, solve_records, knowledge, answer_library, files
@@ -127,6 +127,15 @@ app.include_router(answer_library.router, prefix=API_PREFIX)
 app.include_router(files.router, prefix=API_PREFIX)
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+WEBUI_INDEX = BASE_DIR / "webui" / "index.html"
+
+
+@app.get("/webui", include_in_schema=False)
+async def webui():
+    """管理台: 展示用户 / API Key / 知识点掌握情况(前端直连现有只读接口)。"""
+    html = WEBUI_INDEX.read_text(encoding="utf-8") if WEBUI_INDEX.is_file() else "<h1>webui not found</h1>"
+    return HTMLResponse(html)
 
 
 @app.get("/health")

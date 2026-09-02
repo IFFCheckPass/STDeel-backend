@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>思谛 STDeel 管理台</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --panel2: #334155;
+    --line: #334155; --text: #e2e8f0; --muted: #94a3b8;
+    --accent: #38bdf8; --ok: #34d399; --warn: #fbbf24; --bad: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px; min-height: 100vh;
+  }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; }
+  header h1 { font-size: 22px; font-weight: 700; letter-spacing: .3px; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 420px 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+  .card h2 { font-size: 15px; margin-bottom: 12px; color: var(--accent); display: flex; align-items: center; gap: 8px; }
+  .search { width: 100%; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); color: var(--text); margin-bottom: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 7px 8px; border-bottom: 1px solid #26324a; }
+  tr.clickable { cursor: pointer; transition: background .15s; }
+  tr.clickable:hover { background: #27364f; }
+  tr.active { background: #1e3a52; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+  .pill.on { background: #123524; color: var(--ok); }
+  .pill.off { background: #3a1d1d; color: var(--bad); }
+  .bar { height: 7px; border-radius: 999px; background: #26324a; overflow: hidden; min-width: 80px; width: 100%; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+  .rate { display: inline-block; width: 52px; text-align: right; font-variant-numeric: tabular-nums; }
+  .meta { color: var(--muted); font-size: 12px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 14px 4px; }
+  .tag { color: var(--warn); font-size: 12px; }
+  .scroll { max-height: 62vh; overflow: auto; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 1200px) { .row2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>思谛 STDeel 管理台</h1>
+  <span class="sub" id="totalLabel"></span>
+</header>
+
+<div class="grid">
+  <div class="card">
+    <h2>👤 用户</h2>
+    <input class="search" id="search" placeholder="搜索用户名…" autocomplete="off">
+    <div class="scroll">
+      <table>
+        <thead><tr><th>id</th><th>用户名</th><th>device</th><th>注册时间</th></tr></thead>
+        <tbody id="userBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 id="detailTitle">📊 详情（点击左侧用户查看）</h2>
+    <div class="row2">
+      <div>
+        <h2>🔑 API Key</h2>
+        <div id="apiKeyBox"><span class="empty">未选择用户</span></div>
+      </div>
+      <div>
+        <h2>📈 知识点掌握</h2>
+        <div id="masteryBox"><span class="empty">未选择用户</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let all = [];
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function loadUsers() {
+  const res = await fetch('/users?page=1&page_size=200');
+  const data = await res.json();
+  all = data.items || [];
+  $('#totalLabel').textContent = `用户数：${data.total}`;
+  renderUsers($('#search').value);
+}
+function renderUsers(q = '') {
+  const kw = q.trim().toLowerCase();
+  const rows = all
+    .filter(u => !kw || (u.username||'').toLowerCase().includes(kw) || String(u.user_id||u.id).includes(kw))
+    .map(u => `
+      <tr class="clickable" data-id="${u.id}" onclick="selectUser(${u.id}, this)">
+        <td>${u.id}</td>
+        <td>${esc(u.username)}</td>
+        <td class="meta">${esc(u.device_id||'—')}</td>
+        <td class="meta">${esc((u.created_at||'').replace('T',' ').slice(0,16))}</td>
+      </tr>`).join('');
+  $('#userBody').innerHTML = rows || '<tr><td colspan="4" class="empty">无匹配用户</td></tr>';
+}
+async function selectUser(id, el) {
+  document.querySelectorAll('#userBody tr.active').forEach(t => t.classList.remove('active'));
+  if (el) el.classList.add('active');
+  const u = all.find(x => x.id === id);
+  $('#detailTitle').innerHTML = `📊 详情：<span class="tag">${esc(u ? u.username : id)}</span>`;
+  loadApiKeys(id);
+  loadMastery(id);
+}
+async function loadApiKeys(id) {
+  const box = $('#apiKeyBox');
+  box.innerHTML = '<span class="empty">加载中…</span>';
+  try {
+    const res = await fetch(`/users/api-key?user_id=${id}`);
+    const keys = await res.json();
+    if (!keys || !keys.length) { box.innerHTML = '<span class="empty">该用户暂无 API Key</span>'; return; }
+    box.innerHTML = keys.map(k => `
+      <div style="padding:8px 0;border-bottom:1px solid #26324a">
+        <div><span class="pill ${k.enabled?'on':'off'}">${k.enabled?'启用':'停用'}</span>
+        <span class="meta">${esc(k.name||'未命名')}</span></div>
+        <div class="mono" style="margin-top:4px">${esc(k.api_key)}</div>
+      </div>`).join('');
+  } catch(e) {
+    box.innerHTML = `<span class="empty">加载失败：${esc(e.message)}</span>`;
+  }
+}
+function pct(c, w) { return c + w === 0 ? 0 : Math.round(w / (c + w) * 100); }
+async function loadMastery(id) {
+  const box = $('#masteryBox');
+  box.innerHTML = '<span class="empty">加载中…</span>';
+  try {
+    const res = await fetch(`/users/${id}/mastery`);
+    const data = await res.json();
+    const items = data.items || [];
+    if (!items.length) { box.innerHTML = '<span class="empty">暂无知识点掌握数据</span>'; return; }
+    box.innerHTML = items.slice(0, 40).map(m => {
+      const rate = pct(m.correct_count, m.wrong_count);
+      return `
+      <div style="padding:8px 0;border-bottom:1px solid #26324a">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+          <span>${esc(m.knowledge_point)}</span>
+          <span class="meta">✅${m.correct_count} ❌${m.wrong_count} <span class="rate">${rate}%</span></span>
+        </div>
+        <div class="bar"><i style="width:${Math.max(3, rate)}%"></i></div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    box.innerHTML = `<span class="empty">加载失败：${esc(e.message)}</span>`;
+  }
+}
+$('#search').addEventListener('input', e => renderUsers(e.target.value));
+loadUsers();
+</script>
+</body>
+</html>
