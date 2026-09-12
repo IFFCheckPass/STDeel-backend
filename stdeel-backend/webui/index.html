@@ -43,12 +43,32 @@
   .scroll { max-height: 62vh; overflow: auto; }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 1200px) { .row2 { grid-template-columns: 1fr; } }
+  .btn {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+    transition: background .15s;
+  }
+  .btn:hover { background: #3b4b66; }
+  .btn.danger { border-color: #7f3a3a; color: var(--bad); }
+  .btn.danger:hover { background: #3a1d1d; }
+  .btn.sm { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
+  .fb-correct { color: var(--ok); }
+  .fb-wrong { color: var(--bad); }
+  .fb-none { color: var(--muted); }
+  .record { padding: 10px 0; border-bottom: 1px solid #26324a; }
+  .record .q { font-weight: 600; margin-bottom: 4px; }
+  .record .a { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .record .meta-row { display: flex; gap: 12px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-left: auto; }
 </style>
 </head>
 <body>
 <header>
   <h1>思谛 STDeel 管理台</h1>
-  <span class="sub" id="totalLabel"></span>
+  <div class="toolbar">
+    <span class="sub" id="totalLabel"></span>
+    <button class="btn" onclick="refreshAll()">↻ 刷新</button>
+  </div>
 </header>
 
 <div class="grid">
@@ -57,7 +77,7 @@
     <input class="search" id="search" placeholder="搜索用户名…" autocomplete="off">
     <div class="scroll">
       <table>
-        <thead><tr><th>id</th><th>用户名</th><th>device</th><th>注册时间</th></tr></thead>
+        <thead><tr><th>id</th><th>用户名</th><th>device</th><th>注册时间</th><th>操作</th></tr></thead>
         <tbody id="userBody"></tbody>
       </table>
     </div>
@@ -75,6 +95,8 @@
         <div id="masteryBox"><span class="empty">未选择用户</span></div>
       </div>
     </div>
+    <h2 style="margin-top:18px">📖 解题记录</h2>
+    <div id="recordsBox"><span class="empty">未选择用户</span></div>
   </div>
 </div>
 
@@ -102,8 +124,9 @@ function renderUsers(q = '') {
         <td>${esc(u.username)}</td>
         <td class="meta">${esc(u.device_id||'—')}</td>
         <td class="meta">${esc((u.created_at||'').replace('T',' ').slice(0,16))}</td>
+        <td><button class="btn danger sm" onclick="event.stopPropagation();deleteUser(${u.id}, '${esc(u.username)}')">删除</button></td>
       </tr>`).join('');
-  $('#userBody').innerHTML = rows || '<tr><td colspan="4" class="empty">无匹配用户</td></tr>';
+  $('#userBody').innerHTML = rows || '<tr><td colspan="5" class="empty">无匹配用户</td></tr>';
 }
 async function selectUser(id, el) {
   document.querySelectorAll('#userBody tr.active').forEach(t => t.classList.remove('active'));
@@ -112,6 +135,7 @@ async function selectUser(id, el) {
   $('#detailTitle').innerHTML = `📊 详情：<span class="tag">${esc(u ? u.username : id)}</span>`;
   loadApiKeys(id);
   loadMastery(id);
+  loadRecords(id);
 }
 async function loadApiKeys(id) {
   const box = $('#apiKeyBox');
@@ -153,6 +177,56 @@ async function loadMastery(id) {
   } catch(e) {
     box.innerHTML = `<span class="empty">加载失败：${esc(e.message)}</span>`;
   }
+}
+function fbLabel(f) {
+  if (f === 'correct') return '<span class="fb-correct">✓ 正确</span>';
+  if (f === 'wrong') return '<span class="fb-wrong">✗ 错误</span>';
+  return '<span class="fb-none">未标注</span>';
+}
+async function loadRecords(id) {
+  const box = $('#recordsBox');
+  box.innerHTML = '<span class="empty">加载中…</span>';
+  try {
+    const res = await fetch(`/users/${id}/records`);
+    const records = await res.json();
+    if (!Array.isArray(records) || !records.length) { box.innerHTML = '<span class="empty">该用户暂无解题记录</span>'; return; }
+    box.innerHTML = records.map(r => {
+      const kps = Array.isArray(r.knowledge_points) ? r.knowledge_points.join('、') : (r.knowledge_points || '—');
+      return `
+      <div class="record">
+        <div class="q">${esc(r.question_text)}</div>
+        <div class="a">${r.answer ? '答案：' + esc(r.answer) : '无答案'}</div>
+        <div class="meta-row">
+          <span>${fbLabel(r.user_feedback)}</span>
+          <span class="mono">${r.ai_model||'—'}</span>
+          <span>${esc(r.latency_ms??'')}ms</span>
+          <span>${esc(kps)}</span>
+          <span>${esc((r.created_at||'').replace('T',' ').slice(0,16))}</span>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    box.innerHTML = `<span class="empty">加载失败：${esc(e.message)}</span>`;
+  }
+}
+async function deleteUser(id, username) {
+  const ok = confirm(`确定删除用户「${username}」(id=${id})？\n将一并删除其解题记录、知识点掌握、API Key，且不可恢复！`);
+  if (!ok) return;
+  try {
+    const res = await fetch(`/users/${id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert('删除失败：' + (body.detail || res.status));
+      return;
+    }
+    alert('已删除用户 ' + username);
+    refreshAll();
+  } catch(e) {
+    alert('删除失败：' + e.message);
+  }
+}
+async function refreshAll() {
+  await loadUsers();
 }
 $('#search').addEventListener('input', e => renderUsers(e.target.value));
 loadUsers();
