@@ -86,7 +86,7 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 async function loadUsers() {
-  const res = await fetch('/users?page=1&page_size=200');
+  const res = await fetch('/users?page=1&page_size=100');
   const data = await res.json();
   all = data.items || [];
   $('#totalLabel').textContent = `用户数：${data.total}`;

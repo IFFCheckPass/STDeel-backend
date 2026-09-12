@@ -88,7 +88,7 @@ async def user_stats(db: AsyncSession = Depends(get_db)):
 @router.get("", response_model=UserList)
 async def list_users(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=1000),
     search: str = Query(""),
     db: AsyncSession = Depends(get_db),
 ):
