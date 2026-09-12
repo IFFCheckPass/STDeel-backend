@@ -100,6 +100,7 @@ async def list_records(
     """双向同步: 正确记录取近 correct_days 天, 错误记录取近 wrong_days 天, 窗口取并集, 按 created_at 倒序。
 
     未传 page/page_size 时返回窗口内全部记录, 便于前端全量拉回后本地幂等去重。
+    feedback 为空(新上传未标注)的记录始终返回, 避免新记录被同步窗口隐藏。
     """
     stmt = select(SolveRecord)
     if user_id is not None:
@@ -113,7 +114,10 @@ async def list_records(
 
     if user_id is not None:
         now = datetime.utcnow()
+        # 双向同步窗口: feedback 为空(新上传未标注)的记录始终返回;
+        # correct 取近 correct_days 天, wrong 取近 wrong_days 天, 其余并集。
         window = or_(
+            SolveRecord.user_feedback.is_(None),
             and_(
                 SolveRecord.user_feedback == "correct",
                 SolveRecord.created_at >= now - timedelta(days=correct_days),

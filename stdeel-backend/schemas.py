@@ -221,12 +221,16 @@ class ApiKeyBatchUpsert(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_api_keys(cls, data):
-        """兼容: api_keys 元素既可是 {api_key,...} 对象, 也可是纯字符串 key。"""
-        if isinstance(data, dict) and isinstance(data.get("api_keys"), list):
-            data["api_keys"] = [
-                ({"api_key": k} if isinstance(k, str) else k)
-                for k in data["api_keys"]
-            ]
+        """兼容: user_id 纯数字字符串转 int; api_keys 元素既可是对象也可是纯字符串 key。"""
+        if isinstance(data, dict):
+            uid = data.get("user_id")
+            if isinstance(uid, str) and uid.strip().isdigit():
+                data["user_id"] = int(uid)
+            if isinstance(data.get("api_keys"), list):
+                data["api_keys"] = [
+                    ({"api_key": k} if isinstance(k, str) else k)
+                    for k in data["api_keys"]
+                ]
         return data
 
 

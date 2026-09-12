@@ -157,6 +157,21 @@ async def get_user_records(user_id: int, db: AsyncSession = Depends(get_db)):
     return result.scalars().all()
 
 
+@router.delete("/{user_id}")
+async def delete_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    """删除用户并级联删除其解题记录、知识点掌握、API key(彻底清除, 用于清理测试用户)。"""
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    await db.execute(delete(SolveRecord).where(SolveRecord.user_id == user_id))
+    await db.execute(delete(KnowledgeMastery).where(KnowledgeMastery.user_id == user_id))
+    await db.execute(delete(UserApiKey).where(UserApiKey.user_id == user_id))
+    await db.delete(user)
+    await db.flush()
+    logger.info("用户删除(cascade): id=%s username=%s", user_id, user.username)
+    return {"ok": True, "deleted_user_id": user_id}
+
+
 @router.get("/{user_id}/mastery", response_model=KnowledgeMasteryList)
 async def get_user_mastery(user_id: int, db: AsyncSession = Depends(get_db)):
     user = await db.get(User, user_id)
