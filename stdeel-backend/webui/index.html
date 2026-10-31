@@ -18,7 +18,7 @@
   header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; }
   header h1 { font-size: 22px; font-weight: 700; letter-spacing: .3px; }
   header .sub { color: var(--muted); font-size: 13px; }
-  .grid { display: grid; grid-template-columns: 420px 1fr; gap: 20px; align-items: start; }
+  .grid { display: grid; grid-template-columns: 440px 1fr; gap: 20px; align-items: start; }
   @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
   .card h2 { font-size: 15px; margin-bottom: 12px; color: var(--accent); display: flex; align-items: center; gap: 8px; }
@@ -53,6 +53,7 @@
   .btn.danger:hover { background: #3a1d1d; }
   .btn.sm { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
   .fb-correct { color: var(--ok); }
+  .fb-partial { color: var(--warn); }
   .fb-wrong { color: var(--bad); }
   .fb-none { color: var(--muted); }
   .record { padding: 10px 0; border-bottom: 1px solid #26324a; }
@@ -74,10 +75,10 @@
 <div class="grid">
   <div class="card">
     <h2>👤 用户</h2>
-    <input class="search" id="search" placeholder="搜索用户名…" autocomplete="off">
+    <input class="search" id="search" placeholder="搜索用户名 / 设备号…" autocomplete="off">
     <div class="scroll">
       <table>
-        <thead><tr><th>id</th><th>用户名</th><th>device</th><th>注册时间</th><th>操作</th></tr></thead>
+        <thead><tr><th>user_id</th><th>用户名</th><th>device</th><th>注册时间</th><th>操作</th></tr></thead>
         <tbody id="userBody"></tbody>
       </table>
     </div>
@@ -107,6 +108,8 @@ let all = [];
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+function enc(s) { return encodeURIComponent(String(s ?? '')); }
+
 async function loadUsers() {
   const res = await fetch('/users?page=1&page_size=100');
   const data = await res.json();
@@ -114,52 +117,59 @@ async function loadUsers() {
   $('#totalLabel').textContent = `用户数：${data.total}`;
   renderUsers($('#search').value);
 }
+
 function renderUsers(q = '') {
   const kw = q.trim().toLowerCase();
   const rows = all
-    .filter(u => !kw || (u.username||'').toLowerCase().includes(kw) || String(u.user_id||u.id).includes(kw))
+    .filter(u => !kw || (u.username||'').toLowerCase().includes(kw)
+              || String(u.user_id||'').toLowerCase().includes(kw)
+              || String(u.device_id||'').toLowerCase().includes(kw))
     .map(u => `
-      <tr class="clickable" data-id="${u.id}" onclick="selectUser(${u.id}, this)">
-        <td>${u.id}</td>
-        <td>${esc(u.username)}</td>
-        <td class="meta">${esc(u.device_id||'—')}</td>
+      <tr class="clickable" onclick="selectUser('${esc(u.user_id)}', this)">
+        <td class="mono">${esc(u.user_id)}</td>
+        <td>${esc(u.username || '—')}</td>
+        <td class="meta">${esc(u.device_id || '—')}</td>
         <td class="meta">${esc((u.created_at||'').replace('T',' ').slice(0,16))}</td>
-        <td><button class="btn danger sm" onclick="event.stopPropagation();deleteUser(${u.id}, '${esc(u.username)}')">删除</button></td>
+        <td><button class="btn danger sm" onclick="event.stopPropagation();deleteUser('${esc(u.user_id)}', '${esc(u.username || u.user_id)}')">删除</button></td>
       </tr>`).join('');
   $('#userBody').innerHTML = rows || '<tr><td colspan="5" class="empty">无匹配用户</td></tr>';
 }
-async function selectUser(id, el) {
+
+async function selectUser(userId, el) {
   document.querySelectorAll('#userBody tr.active').forEach(t => t.classList.remove('active'));
   if (el) el.classList.add('active');
-  const u = all.find(x => x.id === id);
-  $('#detailTitle').innerHTML = `📊 详情：<span class="tag">${esc(u ? u.username : id)}</span>`;
-  loadApiKeys(id);
-  loadMastery(id);
-  loadRecords(id);
+  const u = all.find(x => x.user_id === userId);
+  $('#detailTitle').innerHTML = `📊 详情：<span class="tag">${esc(u ? (u.username || u.user_id) : userId)}</span>`;
+  loadApiKeys(userId);
+  loadMastery(userId);
+  loadRecords(userId);
 }
-async function loadApiKeys(id) {
+
+async function loadApiKeys(userId) {
   const box = $('#apiKeyBox');
   box.innerHTML = '<span class="empty">加载中…</span>';
   try {
-    const res = await fetch(`/users/api-key?user_id=${id}`);
+    const res = await fetch(`/users/api-key?user_id=${enc(userId)}`);
     const keys = await res.json();
     if (!keys || !keys.length) { box.innerHTML = '<span class="empty">该用户暂无 API Key</span>'; return; }
     box.innerHTML = keys.map(k => `
       <div style="padding:8px 0;border-bottom:1px solid #26324a">
         <div><span class="pill ${k.enabled?'on':'off'}">${k.enabled?'启用':'停用'}</span>
-        <span class="meta">${esc(k.name||'未命名')}</span></div>
+        <span class="meta">${esc(k.name || '未命名')}</span></div>
         <div class="mono" style="margin-top:4px">${esc(k.api_key)}</div>
       </div>`).join('');
   } catch(e) {
     box.innerHTML = `<span class="empty">加载失败：${esc(e.message)}</span>`;
   }
 }
+
 function pct(c, w) { return c + w === 0 ? 0 : Math.round(w / (c + w) * 100); }
-async function loadMastery(id) {
+
+async function loadMastery(userId) {
   const box = $('#masteryBox');
   box.innerHTML = '<span class="empty">加载中…</span>';
   try {
-    const res = await fetch(`/users/${id}/mastery`);
+    const res = await fetch(`/users/${enc(userId)}/mastery`);
     const data = await res.json();
     const items = data.items || [];
     if (!items.length) { box.innerHTML = '<span class="empty">暂无知识点掌握数据</span>'; return; }
@@ -168,7 +178,7 @@ async function loadMastery(id) {
       return `
       <div style="padding:8px 0;border-bottom:1px solid #26324a">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
-          <span>${esc(m.knowledge_point)}</span>
+          <span>${esc(m.knowledge_point)} <span class="meta">${esc(m.subject || '')}</span></span>
           <span class="meta">✅${m.correct_count} ❌${m.wrong_count} <span class="rate">${rate}%</span></span>
         </div>
         <div class="bar"><i style="width:${Math.max(3, rate)}%"></i></div>
@@ -178,29 +188,39 @@ async function loadMastery(id) {
     box.innerHTML = `<span class="empty">加载失败：${esc(e.message)}</span>`;
   }
 }
+
 function fbLabel(f) {
   if (f === 'correct') return '<span class="fb-correct">✓ 正确</span>';
+  if (f === 'partial') return '<span class="fb-partial">◐ 部分错误</span>';
   if (f === 'wrong') return '<span class="fb-wrong">✗ 错误</span>';
   return '<span class="fb-none">未标注</span>';
 }
-async function loadRecords(id) {
+function actionLabel(a) {
+  const map = { solve: '解题', retry: '重答', detail: '疑问', correct: '正确', partial: '部分错误', wrong: '错误' };
+  return map[a] || a || '—';
+}
+
+async function loadRecords(userId) {
   const box = $('#recordsBox');
   box.innerHTML = '<span class="empty">加载中…</span>';
   try {
-    const res = await fetch(`/users/${id}/records`);
+    const res = await fetch(`/users/${enc(userId)}/records?limit=100`);
     const records = await res.json();
     if (!Array.isArray(records) || !records.length) { box.innerHTML = '<span class="empty">该用户暂无解题记录</span>'; return; }
     box.innerHTML = records.map(r => {
       const kps = Array.isArray(r.knowledge_points) ? r.knowledge_points.join('、') : (r.knowledge_points || '—');
       return `
       <div class="record">
-        <div class="q">${esc(r.question_text)}</div>
+        <div class="q">${esc(r.question_text || '（空题干）')}</div>
         <div class="a">${r.answer ? '答案：' + esc(r.answer) : '无答案'}</div>
         <div class="meta-row">
           <span>${fbLabel(r.user_feedback)}</span>
-          <span class="mono">${r.ai_model||'—'}</span>
-          <span>${esc(r.latency_ms??'')}ms</span>
-          <span>${esc(kps)}</span>
+          <span class="meta">动作：${esc(actionLabel(r.action_type))}</span>
+          <span>${esc(r.subject || '未分类')}</span>
+          <span class="mono">${esc(r.ai_model || '—')}</span>
+          <span>${esc(r.latency_ms ?? '')}ms</span>
+          <span>${esc(kps || '—')}</span>
+          <span>#${esc(r.id)}</span>
           <span>${esc((r.created_at||'').replace('T',' ').slice(0,16))}</span>
         </div>
       </div>`;
@@ -209,11 +229,12 @@ async function loadRecords(id) {
     box.innerHTML = `<span class="empty">加载失败：${esc(e.message)}</span>`;
   }
 }
-async function deleteUser(id, username) {
-  const ok = confirm(`确定删除用户「${username}」(id=${id})？\n将一并删除其解题记录、知识点掌握、API Key，且不可恢复！`);
+
+async function deleteUser(userId, username) {
+  const ok = confirm(`确定删除用户「${username}」(${userId})？\n将一并删除其解题记录、知识点掌握、API Key，且不可恢复！`);
   if (!ok) return;
   try {
-    const res = await fetch(`/users/${id}`, { method: 'DELETE' });
+    const res = await fetch(`/users/${enc(userId)}`, { method: 'DELETE' });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       alert('删除失败：' + (body.detail || res.status));
@@ -225,9 +246,11 @@ async function deleteUser(id, username) {
     alert('删除失败：' + e.message);
   }
 }
+
 async function refreshAll() {
   await loadUsers();
 }
+
 $('#search').addEventListener('input', e => renderUsers(e.target.value));
 loadUsers();
 </script>
