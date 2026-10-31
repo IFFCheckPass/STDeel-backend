@@ -30,32 +30,50 @@ fail() { printf '\n[失败] %s\n' "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
 log "1/6 停止服务"
+# 只认 cmdline 里带 main:app 的进程，避免 pid 复用误杀
 collect_pids() {
   local pids=""
-  if [ -f "$PID_FILE" ]; then
-    pids="$(cat "$PID_FILE" 2>/dev/null || true)"
-  fi
+  [ -f "$PID_FILE" ] && pids="$(cat "$PID_FILE" 2>/dev/null || true)"
   local listening
   listening="$(ss -ltnp 2>/dev/null | grep -E ":$PORT[[:space:]]" | grep -o 'pid=[0-9]*' | cut -d= -f2 || true)"
-  printf '%s\n%s\n' "$pids" "$listening" | grep -E '^[0-9]+$' | sort -u || true
+  {
+    printf '%s\n' "$pids"
+    printf '%s\n' "$listening"
+  } | grep -E '^[0-9]+$' | sort -u | while read -r pid; do
+    if grep -qa "main:app" "/proc/$pid/cmdline" 2>/dev/null; then
+      echo "$pid"
+    fi
+  done
 }
 
-PIDS="$(collect_pids)"
-if [ -n "$PIDS" ]; then
-  # shellcheck disable=SC2086
-  kill $PIDS 2>/dev/null || true
-  for _ in $(seq 1 15); do
-    sleep 1
-    ss -ltn 2>/dev/null | grep -q ":$PORT " || break
-  done
-  if ss -ltn 2>/dev/null | grep -q ":$PORT "; then
-    echo "优雅停止超时，强制结束"
+STOPPED=0
+for _ in 1 2 3 4 5; do
+  PIDS="$(collect_pids)"
+  if [ -z "$PIDS" ] && ! ss -ltn 2>/dev/null | grep -q ":$PORT "; then
+    STOPPED=1
+    break
+  fi
+  if [ -n "$PIDS" ]; then
+    # shellcheck disable=SC2086
+    kill $PIDS 2>/dev/null || true
+  fi
+  sleep 2
+done
+
+if [ "$STOPPED" -ne 1 ]; then
+  PIDS="$(collect_pids)"
+  if [ -n "$PIDS" ]; then
+    echo "优雅停止超时，强制结束：$PIDS"
     # shellcheck disable=SC2086
     kill -9 $PIDS 2>/dev/null || true
-    sleep 1
+    sleep 2
   fi
-  ss -ltn 2>/dev/null | grep -q ":$PORT " && fail "端口 $PORT 仍被占用，请先排查"
 fi
+
+if ! ss -ltn 2>/dev/null | grep -q ":$PORT "; then
+  STOPPED=1
+fi
+[ "$STOPPED" -eq 1 ] || fail "端口 $PORT 仍被占用：请先在宝塔面板停止「$SERVICE」项目，然后重跑本脚本"
 echo "服务已停止"
 
 # ---------------------------------------------------------------------------
@@ -92,7 +110,10 @@ log "4/6 恢复数据库"
 # 新版本不再跟踪 app.db；reset --hard 可能删除它，这里用备份还原（含 WAL/SHM）
 rm -f "$APP_DIR"/app.db "$APP_DIR"/app.db-wal "$APP_DIR"/app.db-shm
 if [ -f "$BACKUP_DIR/app.db" ]; then
-  cp -a "$BACKUP_DIR"/app.db* "$APP_DIR"/
+  cp -a "$BACKUP_DIR/app.db" "$APP_DIR"/
+  # WAL 要一起还原；-shm 是共享内存索引，删掉让 SQLite 自己重建更安全
+  [ -f "$BACKUP_DIR/app.db-wal" ] && cp -a "$BACKUP_DIR/app.db-wal" "$APP_DIR"/
+  rm -f "$APP_DIR"/app.db-shm
   echo "数据库已还原：$(du -h "$APP_DIR/app.db" | cut -f1)"
 else
   echo "备份中没有数据库（首次部署），将自动初始化"
