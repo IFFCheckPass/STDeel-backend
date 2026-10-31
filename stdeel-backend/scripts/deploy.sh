@@ -124,7 +124,8 @@ log "5/6 权限与缓存"
 rm -rf "$APP_DIR"/__pycache__ "$APP_DIR"/routers/__pycache__
 chown -R www:www "$REPO_DIR"
 find "$APP_DIR" -type d -exec chmod 755 {} \;
-find "$APP_DIR" -type f -name '*.py' -exec chmod 644 {} \;
+# 只补读权限，不改可执行位（否则仓库会因为 mode 变化一直显示 modified）
+find "$APP_DIR" -type f -exec chmod a+r {} \;
 [ -f "$APP_DIR/app.db" ] && chmod 664 "$APP_DIR/app.db"
 echo "已归属 www:www"
 
