@@ -5,5 +5,13 @@ __pycache__/
 .venv/
 venv/
 
-# 上传的题目图片
+# 运行时数据（不入库）：SQLite 数据库、WAL、上传文件、备份
+app.db
+app.db-wal
+app.db-shm
 data/
+uploads/
+backups/
+
+# 编辑器/系统杂物
+.DS_Store
