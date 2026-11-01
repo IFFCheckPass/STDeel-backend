@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models import KnowledgeMastery, SolveRecord, User
+from models import DeletedRecord, KnowledgeMastery, SolveRecord, User
 from schemas import (
     ApiKeyOut,
     ApiKeyPayload,
@@ -293,6 +293,7 @@ async def delete_user(user_id: str, db: AsyncSession = Depends(get_db)):
     public_id = encode_user_id(user.id)
     await db.execute(delete(SolveRecord).where(SolveRecord.user_id == user.id))
     await db.execute(delete(KnowledgeMastery).where(KnowledgeMastery.user_id == user.id))
+    await db.execute(delete(DeletedRecord).where(DeletedRecord.user_id == user.id))
     await db.delete(user)
     await db.flush()
     logger.info("用户删除(级联): user=%s username=%s", public_id, user.username)
