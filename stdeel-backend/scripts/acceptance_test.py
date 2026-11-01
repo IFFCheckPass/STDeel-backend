@@ -366,6 +366,37 @@ def run_suite(api: Api, runner: Runner) -> None:
         f"item={legacy_item.get('subject')}/{legacy_item.get('action_type')}/{legacy_item.get('user_feedback')}",
     )
 
+    # ---- 附加：LaTeX / Markdown 原样往返（v0.9.12 显示规范）----
+    latex_content = '已知 $\\overrightarrow{AB}=(1,2)$，求 $\\overrightarrow{AB}\\cdot\\overrightarrow{AC}$。\n旧写法 \\(x^2\\)；特殊字符 a & b < c > d'
+    latex_answer = '$\\mathbb{R}$ 上的解：\n$\\begin{cases} x=1 \\\\ y=2 \\end{cases}$'
+    latex_solution = '$\\mathbf{a}\\cdot\\mathbf{b}=x_1x_2+y_1y_2$，$\\left| \\vec{v} \\right|$，$\\hat{x}$，$\\overline{AB}$，$\\overset{?}{=}$，$\\not=$，$\\cdots$，未知命令 $\\foo{bar}$'
+    latex_posted = api.ok(
+        "POST",
+        "/solve-records",
+        {
+            "user_id": user_id,
+            "ai_model": "qwen-vl-max",
+            "questions": [{
+                "id": 6001,
+                "content": latex_content,
+                "answer": latex_answer,
+                "solution": latex_solution,
+                "knowledge_points": ["向量"],
+                "subject": "数学",
+            }],
+        },
+    )
+    latex_id = (latex_posted.get("items") or [{}])[0].get("id")
+    latex_records = api.ok("GET", f"/solve-records?user_id={q(user_id)}")
+    latex_item = find_item(latex_records.get("items", []), latex_id) or {}
+    runner.check(
+        "附加 LaTeX/Markdown 原样往返（不转义、不规范化）",
+        latex_item.get("question_text") == latex_content
+        and latex_item.get("answer") == latex_answer
+        and latex_item.get("solution") == latex_solution,
+        f"answer={latex_item.get('answer')!r}",
+    )
+
     # ---- 附加：PUT /users/api-key 全量覆盖幂等（不输出 Key 内容） ----
     key_payload = {
         "user_id": user_id,
