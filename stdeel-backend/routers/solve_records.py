@@ -38,6 +38,7 @@ from utils import (
     normalize_feedback,
     normalize_source,
     normalize_subject,
+    parse_client_datetime,
     utcnow,
 )
 
@@ -99,7 +100,12 @@ async def _create_batch(db: AsyncSession, user: User, payload: dict, questions: 
                 user.id, context["source"], context["image_path"], index, question_text
             )
 
-        record, created = await upsert_solve_record(db, user.id, question_payload, now)
+        question_created = parse_client_datetime(
+            question.get("created_at") or payload.get("created_at")
+        )
+        record, created = await upsert_solve_record(
+            db, user.id, question_payload, now, created_at=question_created
+        )
         items.append({"id": record.id})
         logger.info(
             "解题记录%s: user=%s record=%s local_id=%s action=%s feedback=%s points=%s",
@@ -133,10 +139,16 @@ async def _create_single(db: AsyncSession, user: User, payload: dict) -> dict:
         "action_type": normalize_action(payload.get("action_type")),
         "user_feedback": normalize_feedback(payload.get("user_feedback")),
         "image_path": as_clean_text(payload.get("image_path")),
-        # 单条补传没有 knowledge_points / source / confidence / question_no
+        # 契约里形态 B 没列这些字段，但客户端愿意带就收下（组卷要用知识点）
+        "knowledge_points": payload.get("knowledge_points"),
+        "source": normalize_source(payload.get("source"), "") or None,
+        "question_no": as_int(payload.get("question_no")) or None,
     }
 
-    record, created = await upsert_solve_record(db, user.id, record_payload, now)
+    created_at = parse_client_datetime(
+        payload.get("created_at") or payload.get("solved_at")
+    )
+    record, created = await upsert_solve_record(db, user.id, record_payload, now, created_at=created_at)
     await recompute_mastery(db, user.id)
     logger.info(
         "解题记录补传%s: user=%s record=%s local_id=%s action=%s feedback=%s",

@@ -209,6 +209,36 @@ def utcnow() -> datetime:
     return datetime.utcnow()
 
 
+def parse_client_datetime(value: Any) -> datetime | None:
+    """解析客户端传来的原始时间：ISO-8601（带 Z / 偏移）、秒或毫秒时间戳。
+
+    用于「补传的历史记录保留原解题时间」——否则一次批量补传会让 200 多条记录
+    的时间戳全挤在同一秒，按时间衰减算薄弱点就失真了。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        stamp = float(value)
+        if stamp > 1e11:  # 毫秒
+            stamp /= 1000.0
+        try:
+            return datetime.utcfromtimestamp(stamp)
+        except (OSError, ValueError, OverflowError):
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return parse_client_datetime(int(text))
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00").replace("z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
 def iso_utc(value: datetime | None) -> str | None:
     """输出 ISO-8601 UTC 字符串，如 2026-10-31T12:00:00Z。"""
     if value is None:

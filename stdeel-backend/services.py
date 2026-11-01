@@ -100,6 +100,17 @@ def _new_record(user_id: int, payload: dict[str, Any], now: datetime) -> SolveRe
     return record
 
 
+def _clamp_created(value: datetime | None, now: datetime) -> datetime:
+    """客户端给的时间要合理：未来时间压回 now，2000 年以前视为无效。"""
+    if value is None:
+        return now
+    if value > now:
+        return now
+    if value.year < 2000:
+        return now
+    return value
+
+
 def _merge_into(record: SolveRecord, payload: dict[str, Any]) -> None:
     """把非空字段合并进已有记录（重传不得丢状态、不得清空内容）。"""
     for key, value in payload.items():
@@ -170,6 +181,7 @@ async def upsert_solve_record(
     user_id: int,
     payload: dict[str, Any],
     now: datetime | None = None,
+    created_at: datetime | None = None,
 ) -> tuple[SolveRecord, bool]:
     """按 (user_id, local_id) 幂等写入；没有 local_id 时用 batch_key + 时间窗口兜底。
 
@@ -188,7 +200,7 @@ async def upsert_solve_record(
         )
 
     if record is None:
-        record = _new_record(user_id, payload, now)
+        record = _new_record(user_id, payload, _clamp_created(created_at, now))
         db.add(record)
         await db.flush()
         return record, True

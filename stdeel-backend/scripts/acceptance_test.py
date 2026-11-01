@@ -397,6 +397,32 @@ def run_suite(api: Api, runner: Runner) -> None:
         f"answer={latex_item.get('answer')!r}",
     )
 
+    # ---- 附加：单条补传带 knowledge_points + 原始 created_at（组卷要用）----
+    enriched = api.ok(
+        "POST",
+        "/solve-records",
+        {
+            "user_id": user_id,
+            "local_id": 7001,
+            "question_text": "补传带知识点与原始时间",
+            "answer": "a",
+            "solution": "s",
+            "knowledge_points": ["直线与圆", "圆的方程"],
+            "created_at": "2026-10-20T08:30:00Z",
+            "action_type": "wrong",
+            "user_feedback": "wrong",
+        },
+    )
+    enriched_item = find_item(
+        api.ok("GET", f"/solve-records?user_id={q(user_id)}").get("items", []), enriched.get("id")
+    ) or {}
+    runner.check(
+        "附加 单条补传保留 knowledge_points 与原始 created_at",
+        enriched_item.get("knowledge_points") == ["直线与圆", "圆的方程"]
+        and str(enriched_item.get("created_at", "")).startswith("2026-10-20T08:30"),
+        f"kp={enriched_item.get('knowledge_points')} created={enriched_item.get('created_at')}",
+    )
+
     # ---- 附加：PUT /users/api-key 全量覆盖幂等（不输出 Key 内容） ----
     key_payload = {
         "user_id": user_id,
