@@ -37,11 +37,15 @@ ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("confidence", "confidence FLOAT"),
         ("question_no", "question_no INTEGER"),
         ("updated_at", "updated_at DATETIME"),
+        ("client_ref", "client_ref VARCHAR(255)"),
+        ("content_key", "content_key VARCHAR(64)"),
     ],
     "answer_library": [
         ("user_id", "user_id INTEGER"),
         ("subject", "subject VARCHAR(32)"),
         ("updated_at", "updated_at DATETIME"),
+        ("client_ref", "client_ref VARCHAR(255)"),
+        ("content_key", "content_key VARCHAR(64)"),
     ],
     "knowledge_mastery": [
         ("subject", "subject VARCHAR(32)"),
@@ -294,6 +298,10 @@ async def _backfill_answer_hashes(conn: AsyncConnection) -> None:
 
 async def _create_indexes(conn: AsyncConnection) -> None:
     dedupe_statements = [
+        "DELETE FROM solve_records WHERE client_ref IS NOT NULL AND id NOT IN "
+        "(SELECT MAX(id) FROM solve_records WHERE client_ref IS NOT NULL GROUP BY user_id, client_ref)",
+        "DELETE FROM solve_records WHERE content_key IS NOT NULL AND id NOT IN "
+        "(SELECT MAX(id) FROM solve_records WHERE content_key IS NOT NULL GROUP BY user_id, content_key)",
         "DELETE FROM solve_records WHERE local_id IS NOT NULL AND id NOT IN "
         "(SELECT MAX(id) FROM solve_records WHERE local_id IS NOT NULL GROUP BY user_id, local_id)",
         "DELETE FROM answer_library WHERE user_id IS NOT NULL AND question_hash IS NOT NULL AND id NOT IN "
@@ -308,6 +316,14 @@ async def _create_indexes(conn: AsyncConnection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_device_id ON users(device_id) WHERE device_id IS NOT NULL",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_solve_records_user_local "
         "ON solve_records(user_id, local_id) WHERE local_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_solve_records_user_client_ref "
+        "ON solve_records(user_id, client_ref) WHERE client_ref IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_solve_records_user_content_key "
+        "ON solve_records(user_id, content_key) WHERE content_key IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_solve_records_user_updated "
+        "ON solve_records(user_id, updated_at)",
+        "CREATE INDEX IF NOT EXISTS ix_deleted_records_user_time "
+        "ON deleted_records(user_id, deleted_at)",
         "CREATE INDEX IF NOT EXISTS ix_solve_records_user_created ON solve_records(user_id, created_at)",
         "CREATE INDEX IF NOT EXISTS ix_solve_records_batch_key ON solve_records(user_id, batch_key)",
         "CREATE INDEX IF NOT EXISTS ix_answer_library_user ON answer_library(user_id)",

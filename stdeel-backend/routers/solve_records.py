@@ -8,6 +8,7 @@
 - GET 必须回传 action_type 与 user_feedback（v0.9.11 回归点）。
 """
 
+import hashlib
 import logging
 from datetime import timedelta
 
@@ -16,7 +17,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models import SolveRecord, User
+from models import DeletedRecord, SolveRecord, User
 from schemas import (
     DeleteRecordPayload,
     FeedbackPayload,
@@ -24,7 +25,7 @@ from schemas import (
     SolveRecordList,
     SolveRecordOut,
 )
-from services import compute_batch_key, recompute_mastery, upsert_solve_record
+from services import compute_batch_key, recompute_mastery, upsert_bulk, upsert_solve_record
 from utils import (
     FEEDBACK_VALUES,
     as_bool,
@@ -37,6 +38,9 @@ from utils import (
     normalize_action,
     normalize_feedback,
     normalize_source,
+    iso_utc,
+    iso_utc_ms,
+    normalize_question_text,
     normalize_subject,
     parse_client_datetime,
     utcnow,
@@ -172,45 +176,180 @@ async def create_records(body: SolveRecordCreate | None = None, db: AsyncSession
     return await _create_single(db, user, payload)
 
 
+BULK_STATUS_VALUES = ("inserted", "updated", "duplicated")
+
+
+def _bulk_payload(raw: dict, device_id: str) -> dict:
+    """把同步 v2 的单条记录整理成 upsert 用的 payload。"""
+    if not isinstance(raw, dict):
+        raise ValueError("record 必须是对象")
+
+    local_id = as_int(raw.get("local_id"), 0) or None
+    client_ref = as_clean_text(raw.get("client_ref"))
+    if not client_ref and device_id and local_id:
+        client_ref = f"{device_id}:{local_id}"
+
+    question_text = as_text(raw.get("question_text"))
+    created_at = parse_client_datetime(raw.get("created_at"))
+    content_key = as_clean_text(raw.get("content_key")).lower()
+    if not content_key and question_text:
+        stamp = int(created_at.timestamp() * 1000) if created_at else int(utcnow().timestamp() * 1000)
+        content_key = hashlib.sha256(
+            f"{normalize_question_text(question_text)}|{stamp}".encode("utf-8")
+        ).hexdigest()
+
+    payload = {
+        "client_ref": client_ref or None,
+        "content_key": content_key or None,
+        "local_id": local_id,
+        "question_text": question_text,
+        "answer": as_text(raw.get("answer")),
+        "solution": as_text(raw.get("solution")),
+        "knowledge_points": raw.get("knowledge_points"),
+        "subject": normalize_subject(raw.get("subject")),
+        "ai_model": as_clean_text(raw.get("ai_model")),
+        "latency_ms": as_int(raw.get("latency_ms")),
+        "tokens_used": as_int(raw.get("tokens_used")),
+        "matched": as_bool(raw.get("matched"), False),
+        "action_type": normalize_action(raw.get("action_type")),
+        "user_feedback": normalize_feedback(raw.get("user_feedback")),
+        "source": normalize_source(raw.get("source")),
+        "image_path": as_clean_text(raw.get("image_path")),
+    }
+    return {"payload": payload, "created_at": created_at}
+
+
+@router.post("/bulk", summary="同步 v2：批量全量上传，按 client_ref / content_key 去重")
+async def bulk_upload(body: dict | None = Body(None), db: AsyncSession = Depends(get_db)):
+    payload = body or {}
+    user = await _require_user(db, payload.get("user_id"))
+    device_id = as_clean_text(payload.get("device_id"))
+    records = payload.get("records")
+    if not isinstance(records, list):
+        raise HTTPException(status_code=400, detail="records 必须是数组")
+
+    now = utcnow()
+    items: list[dict] = []
+    failed: list[dict] = []
+
+    for raw in records[:500]:
+        try:
+            prepared = _bulk_payload(raw, device_id)
+            # 每条一个 SAVEPOINT：单条失败不污染整批事务
+            async with db.begin_nested():
+                record, status = await upsert_bulk(
+                    db, user.id, prepared["payload"], now, created_at=prepared["created_at"]
+                )
+            items.append(
+                {"client_ref": prepared["payload"].get("client_ref"), "id": record.id, "status": status}
+            )
+        except Exception as exc:  # noqa: BLE001 - 单条失败要逐条回报
+            logger.warning("bulk 单条失败: %s", exc)
+            failed.append(
+                {
+                    "client_ref": (raw or {}).get("client_ref") if isinstance(raw, dict) else None,
+                    "reason": f"bad_record: {str(exc)[:160]}",
+                }
+            )
+
+    if items:
+        await recompute_mastery(db, user.id)
+
+    logger.info(
+        "bulk 同步: user=%s 请求=%s 成功=%s 失败=%s 状态=%s",
+        encode_user_id(user.id),
+        len(records),
+        len(items),
+        len(failed),
+        {status: sum(1 for item in items if item["status"] == status) for status in BULK_STATUS_VALUES},
+    )
+    return {"server_time": iso_utc_ms(now), "items": items, "failed": failed}
+
+
 # --------------------------------------------------------------------------
 # 读取
 # --------------------------------------------------------------------------
-@router.get("", response_model=SolveRecordList, summary="拉取解题记录（正确 30 天 / 错误 90 天 取并集）")
+@router.get("", response_model=SolveRecordList, summary="拉取解题记录（窗口 / 全量 / 增量 / 分页）")
 async def list_records(
     user_id: str = Query(..., description="用户 id，支持 u_1 或 1"),
     correct_days: int = Query(30, ge=1, le=3660),
     wrong_days: int = Query(90, ge=1, le=3660),
-    limit: int | None = Query(None, ge=1, le=10000, description="可选：限制返回条数，避免一次拉太多"),
+    all_records: int = Query(0, alias="all", description="1=返回该用户全部记录，忽略 30/90 天窗口"),
+    updated_since: str | None = Query(None, description="只返回 updated_at >= 该时间的记录（增量）"),
+    limit: int | None = Query(None, ge=1, le=200, description="默认 200；不传新参数时保持旧行为（不限）"),
+    cursor: str | None = Query(None, description="上一页返回的 next_cursor"),
+    include_deleted: int = Query(0, description="1=附带后端已删除的 id 列表"),
     db: AsyncSession = Depends(get_db),
 ) -> SolveRecordList:
+    now = utcnow()
     user_id_number = decode_user_id(user_id)
     user = await db.get(User, user_id_number) if user_id_number else None
     if user is None:
         logger.warning("拉取记录：用户不存在 user_id=%s", user_id)
-        return SolveRecordList(total=0, items=[])
+        return SolveRecordList(
+            total=0, items=[], next_cursor=None, deleted=[], server_time=iso_utc_ms(now)
+        )
 
-    now = utcnow()
-    # 未标注的记录始终返回，否则换机后「还没点反馈」的历史会凭空消失
-    window = or_(
-        SolveRecord.user_feedback.is_(None),
-        SolveRecord.user_feedback == "none",
-        and_(
-            SolveRecord.user_feedback.in_(("correct", "partial")),
-            SolveRecord.created_at >= now - timedelta(days=correct_days),
-        ),
-        and_(
-            SolveRecord.user_feedback == "wrong",
-            SolveRecord.created_at >= now - timedelta(days=wrong_days),
-        ),
-    )
+    since = parse_client_datetime(updated_since)
+    base = select(SolveRecord).where(SolveRecord.user_id == user.id)
+    if since is not None:
+        # 增量模式：按 updated_at，不看创建时间窗口
+        base = base.where(SolveRecord.updated_at >= since)
+    elif not all_records:
+        # 兼容旧行为：未标注的记录始终返回；correct/partial 30 天、wrong 90 天
+        window = or_(
+            SolveRecord.user_feedback.is_(None),
+            SolveRecord.user_feedback == "none",
+            and_(
+                SolveRecord.user_feedback.in_(("correct", "partial")),
+                SolveRecord.created_at >= now - timedelta(days=correct_days),
+            ),
+            and_(
+                SolveRecord.user_feedback == "wrong",
+                SolveRecord.created_at >= now - timedelta(days=wrong_days),
+            ),
+        )
+        base = base.where(window)
 
-    base = select(SolveRecord).where(SolveRecord.user_id == user.id, window)
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
+
+    # 用了 all / updated_since / cursor 就走分页（默认 200）；否则保持旧版「一次给完」
+    effective_limit = limit
+    if effective_limit is None and (all_records or since is not None or cursor):
+        effective_limit = 200
+    offset = 0
+    if cursor:
+        try:
+            offset = max(0, int(cursor))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="cursor 非法")
+
     stmt = base.order_by(SolveRecord.created_at.desc(), SolveRecord.id.desc())
-    if limit is not None:
-        stmt = stmt.limit(limit)
+    if effective_limit is not None:
+        stmt = stmt.offset(offset).limit(effective_limit)
     rows = (await db.execute(stmt)).scalars().all()
-    return SolveRecordList(total=total, items=[SolveRecordOut.model_validate(row) for row in rows])
+
+    next_cursor = None
+    if effective_limit is not None and len(rows) == effective_limit and offset + len(rows) < total:
+        next_cursor = str(offset + len(rows))
+
+    deleted: list[int] = []
+    if include_deleted:
+        tomb = select(DeletedRecord.record_id).where(DeletedRecord.user_id == user.id)
+        if since is not None:
+            tomb = tomb.where(DeletedRecord.deleted_at >= since)
+        deleted = [
+            int(record_id)
+            for record_id in (await db.execute(tomb.order_by(DeletedRecord.id.desc()).limit(500))).scalars().all()
+        ]
+
+    return SolveRecordList(
+        total=total,
+        items=[SolveRecordOut.model_validate(row) for row in rows],
+        next_cursor=next_cursor,
+        deleted=deleted,
+        server_time=iso_utc_ms(now),
+    )
 
 
 @router.get("/{record_id}", response_model=SolveRecordOut)
@@ -291,6 +430,7 @@ async def delete_record(
 
     owner = record.user_id
     await db.delete(record)
+    db.add(DeletedRecord(user_id=owner, record_id=record_id, deleted_at=utcnow()))
     await db.flush()
     await recompute_mastery(db, owner)
     logger.info("删除记录: user=%s record=%s", encode_user_id(owner), record_id)

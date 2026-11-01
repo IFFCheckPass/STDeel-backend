@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_VALUES: dict[str, Any] = {
     "local_id": None,
     "batch_key": None,
+    "client_ref": None,
+    "content_key": None,
     "question_text": "",
     "answer": "",
     "solution": "",
@@ -148,6 +150,10 @@ def _merge_into(record: SolveRecord, payload: dict[str, Any]) -> None:
             record.local_id = value
         elif key == "batch_key":
             record.batch_key = value
+        elif key in ("client_ref", "content_key"):
+            # 去重键只在为空时补上，避免同一行在两个设备间来回改键
+            if not getattr(record, key):
+                setattr(record, key, value)
 
 
 async def _find_by_local_id(db: AsyncSession, user_id: int, local_id: int) -> SolveRecord | None:
@@ -390,3 +396,60 @@ async def match_answer_library(
     if best is not None and best_similarity >= threshold:
         return {"hit": True, "similarity": round(best_similarity, 4), "answer": best}
     return {"hit": False, "similarity": round(best_similarity, 4), "answer": None}
+
+async def _find_by_client_ref(db: AsyncSession, user_id: int, client_ref: str) -> SolveRecord | None:
+    result = await db.execute(
+        select(SolveRecord)
+        .where(SolveRecord.user_id == user_id, SolveRecord.client_ref == client_ref)
+        .order_by(SolveRecord.id.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
+async def _find_by_content_key(db: AsyncSession, user_id: int, content_key: str) -> SolveRecord | None:
+    result = await db.execute(
+        select(SolveRecord)
+        .where(SolveRecord.user_id == user_id, SolveRecord.content_key == content_key)
+        .order_by(SolveRecord.id.desc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
+async def upsert_bulk(
+    db: AsyncSession,
+    user_id: int,
+    payload: dict[str, Any],
+    now: datetime | None = None,
+    created_at: datetime | None = None,
+) -> tuple[SolveRecord, str]:
+    """同步 v2 的 upsert：client_ref 优先，其次 content_key，最后插入。
+
+    返回 (记录, 状态)，状态 ∈ inserted / updated / duplicated。
+    """
+    now = now or datetime.utcnow()
+    client_ref = (payload.get("client_ref") or "").strip() or None
+    content_key = (payload.get("content_key") or "").strip().lower() or None
+
+    record: SolveRecord | None = None
+    status = "inserted"
+    if client_ref:
+        record = await _find_by_client_ref(db, user_id, client_ref)
+        if record is not None:
+            status = "updated"
+    if record is None and content_key:
+        record = await _find_by_content_key(db, user_id, content_key)
+        if record is not None:
+            status = "duplicated"
+
+    if record is None:
+        record = _new_record(user_id, payload, _clamp_created(created_at, now))
+        db.add(record)
+        await db.flush()
+        return record, status
+
+    _merge_into(record, payload)
+    record.updated_at = now
+    await db.flush()
+    return record, status

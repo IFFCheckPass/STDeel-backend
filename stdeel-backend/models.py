@@ -39,6 +39,9 @@ class SolveRecord(Base):
     user_id = Column(Integer, nullable=False, index=True)
     # 客户端本地 SQLite 主键；批量上传取自 questions[].id，单条补传取自 local_id
     local_id = Column(Integer, nullable=True)
+    # 同步 v2 去重键：device_id + ":" + local_id / sha256(题干|时间戳毫秒)
+    client_ref = Column(String(255), nullable=True)
+    content_key = Column(String(64), nullable=True)
     # 无 local_id 时的批量去重指纹（内容 + 位置 + 时间窗口）
     batch_key = Column(String(64), nullable=True)
 
@@ -79,6 +82,17 @@ class AnswerLibrary(Base):
     subject = Column(String(32), nullable=False, default="未分类")
     created_at = Column(DateTime, nullable=False, default=_utcnow, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, default=_utcnow, server_default=func.now(), onupdate=_utcnow)
+
+
+class DeletedRecord(Base):
+    """删除墓碑：客户端靠它清理本地已同步的记录（同步 v2 的增量下行）。"""
+
+    __tablename__ = "deleted_records"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    record_id = Column(Integer, nullable=False)
+    deleted_at = Column(DateTime, nullable=False, default=_utcnow, server_default=func.now())
 
 
 class KnowledgeMastery(Base):

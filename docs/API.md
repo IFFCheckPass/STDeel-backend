@@ -229,3 +229,57 @@ Query：`user_id`（必填）、`correct_days`（默认 30）、`wrong_days`（�
 > `question_hash` 也会变，答案库里会出现两行。答案库去重依赖题干文本稳定，尽量别混用写法。
 
 字段长度没有上限（SQLite TEXT 不限长），Markdown/LaTeX 变长不影响接口。
+
+---
+
+## 9. 同步 v2（2026-11 新增）
+
+> 背景：后端清库后客户端「同步成功但 0 条」。新方案：每次手动同步**全量上行** → 后端去重落盘并回传
+> id 映射 → 增量下行。
+
+### 9.1 去重键
+
+| 字段 | 计算方 | 用途 |
+|---|---|---|
+| `client_ref` | 客户端，`device_id + ":" + local_id` | 同设备重复同步幂等 |
+| `content_key` | 客户端，`sha256(normalized_text + "\|" + created_at_ms)` | 跨设备/重装/换机去重 |
+
+upsert 顺序：`(user_id, client_ref)` 命中 → `updated`；否则 `(user_id, content_key)` 命中 → `duplicated`；
+都没有 → 插入 `inserted`。两个键都落库（唯一索引，部分索引排除 NULL）。
+
+### 9.2 POST /solve-records/bulk
+
+```json
+{ "user_id": "u_5", "device_id": "…", "records": [ { "client_ref": "…:18", "content_key": "hex…", "…": "…" } ] }
+```
+
+响应：
+
+```json
+{ "server_time": "2026-11-01T07:30:00.000Z",
+  "items": [ { "client_ref": "…:18", "id": 1001, "status": "inserted" } ],
+  "failed": [ { "client_ref": "…:21", "reason": "bad_record: …" } ] }
+```
+
+- 单条失败用 SAVEPOINT 隔离，不影响整批；`id` 一定是数字；响应不带整条记录。
+- 客户端没传 `content_key` 时后端按同规则补算；没传 `client_ref` 时用 `device_id:local_id` 补。
+
+### 9.3 GET /solve-records 扩展
+
+| 参数 | 说明 |
+|---|---|
+| `all=1` | 忽略 30/90 天窗口，返回全部 |
+| `updated_since=<ISO>` | 只返回 `updated_at >= 该时间`（增量） |
+| `limit` | 上限 200；用 `all`/`updated_since`/`cursor` 时默认 200 |
+| `cursor` | 上一页的 `next_cursor` |
+| `include_deleted=1` | 附带 `deleted`（后端已删除的 id 列表） |
+
+响应新增 `next_cursor` / `deleted` / `server_time`；记录里带 `updated_at`。
+
+> 偏差：不传 `all`/`updated_since`/`cursor`/`limit` 时，仍保持旧行为「一次返回窗口内全部」，
+> 避免旧客户端被 200 条截断；新客户端请显式传参。
+
+### 9.4 删除墓碑
+
+`DELETE /solve-records/{id}` 会在 `deleted_records` 表记一条墓碑，供
+`GET ?include_deleted=1` 回传，客户端据此清理本地已同步记录。

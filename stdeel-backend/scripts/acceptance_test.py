@@ -366,6 +366,103 @@ def run_suite(api: Api, runner: Runner) -> None:
         f"item={legacy_item.get('subject')}/{legacy_item.get('action_type')}/{legacy_item.get('user_feedback')}",
     )
 
+    # ---- 附加：同步 v2 批量上传（client_ref / content_key 去重 + 分页 + 增量）----
+    bulk_records = [
+        {
+            "client_ref": f"acc-dev-{run_id}:1",
+            "content_key": "a" * 64,
+            "local_id": 1,
+            "question_text": f"{run_id} 同步v2 题目一",
+            "answer": "a",
+            "solution": "s",
+            "knowledge_points": ["直线与圆"],
+            "created_at": "2026-10-21T08:00:00.000Z",
+        },
+        {
+            "client_ref": f"acc-dev-{run_id}:2",
+            "content_key": "b" * 64,
+            "local_id": 2,
+            "question_text": f"{run_id} 同步v2 题目二",
+            "answer": "b",
+            "solution": "s",
+            "created_at": "2026-10-21T08:05:00.000Z",
+        },
+    ]
+    bulk_first = api.ok(
+        "POST", "/solve-records/bulk",
+        {"user_id": user_id, "device_id": f"acc-dev-{run_id}", "records": bulk_records},
+    )
+    bulk_second = api.ok(
+        "POST", "/solve-records/bulk",
+        {"user_id": user_id, "device_id": f"acc-dev-{run_id}", "records": bulk_records},
+    )
+    cross_device = api.ok(
+        "POST", "/solve-records/bulk",
+        {
+            "user_id": user_id,
+            "device_id": f"acc-dev2-{run_id}",
+            "records": [dict(bulk_records[0], client_ref=f"acc-dev2-{run_id}:9", local_id=9)],
+        },
+    )
+    statuses_1 = [item["status"] for item in bulk_first["items"]]
+    statuses_2 = [item["status"] for item in bulk_second["items"]]
+    ids_1 = [item["id"] for item in bulk_first["items"]]
+    runner.check(
+        "附加 同步v2 批量上传：inserted→updated，跨设备 content_key 命中 duplicated",
+        statuses_1 == ["inserted", "inserted"]
+        and statuses_2 == ["updated", "updated"]
+        and [item["id"] for item in bulk_second["items"]] == ids_1
+        and cross_device["items"][0]["status"] == "duplicated"
+        and cross_device["items"][0]["id"] == ids_1[0],
+        f"{statuses_1}/{statuses_2}/{cross_device['items'][0]['status']}",
+    )
+
+    # 单条失败不影响其它条
+    mixed = api.ok(
+        "POST", "/solve-records/bulk",
+        {
+            "user_id": user_id,
+            "device_id": f"acc-dev-{run_id}",
+            "records": [
+                "not-a-dict",
+                {
+                    "client_ref": f"acc-dev-{run_id}:3",
+                    "content_key": "c" * 64,
+                    "local_id": 3,
+                    "question_text": f"{run_id} 同步v2 题目三",
+                },
+            ],
+        },
+    )
+    runner.check(
+        "附加 同步v2 单条失败隔离（failed 逐条返回，其余照常落库）",
+        len(mixed["failed"]) == 1 and len(mixed["items"]) == 1 and "id" in mixed["items"][0],
+        f"items={len(mixed['items'])} failed={len(mixed['failed'])}",
+    )
+
+    # 分页 + 增量 + 墓碑
+    page_one = api.ok("GET", f"/solve-records?user_id={q(user_id)}&all=1&limit=2")
+    page_two = (
+        api.ok("GET", f"/solve-records?user_id={q(user_id)}&all=1&limit=2&cursor={q(page_one['next_cursor'])}")
+        if page_one.get("next_cursor")
+        else {"items": []}
+    )
+    api.ok("PATCH", f"/solve-records/{ids_1[0]}/feedback", {"feedback": "correct", "user_id": user_id})
+    incremental = api.ok(
+        "GET",
+        f"/solve-records?user_id={q(user_id)}&updated_since={q(page_one['server_time'])}",
+    )
+    api.ok("DELETE", f"/solve-records/{ids_1[0]}", {"user_id": user_id})
+    with_deleted = api.ok("GET", f"/solve-records?user_id={q(user_id)}&all=1&include_deleted=1")
+    runner.check(
+        "附加 同步v2 分页 / updated_since 增量 / deleted 墓碑",
+        len(page_one["items"]) == 2
+        and page_one["next_cursor"]
+        and len(incremental["items"]) >= 1
+        and ids_1[0] in with_deleted["deleted"],
+        f"page={len(page_one['items'])} next={page_one['next_cursor']} inc={len(incremental['items'])} del={with_deleted['deleted']}",
+    )
+
     # ---- 附加：LaTeX / Markdown 原样往返（v0.9.12 显示规范）----
     latex_content = '已知 $\\overrightarrow{AB}=(1,2)$，求 $\\overrightarrow{AB}\\cdot\\overrightarrow{AC}$。\n旧写法 \\(x^2\\)；特殊字符 a & b < c > d'
     latex_answer = '$\\mathbb{R}$ 上的解：\n$\\begin{cases} x=1 \\\\ y=2 \\end{cases}$'

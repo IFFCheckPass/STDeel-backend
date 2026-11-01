@@ -192,6 +192,7 @@ class SolveRecordOut(BaseModel):
     confidence: Optional[float] = None
     question_no: int = 0
     image_path: str = ""
+    updated_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
 
     @computed_field  # type: ignore[prop-decorator]
@@ -225,9 +226,10 @@ class SolveRecordOut(BaseModel):
             "question_no": getattr(data, "question_no", 0) or 0,
             "image_path": getattr(data, "image_path", None) or "",
             "created_at": getattr(data, "created_at", None),
+            "updated_at": getattr(data, "updated_at", None),
         }
 
-    @field_serializer("created_at")
+    @field_serializer("created_at", "updated_at")
     def _serialize_time(self, value: Optional[datetime]) -> Optional[str]:
         return iso_utc(value)
 
@@ -235,6 +237,9 @@ class SolveRecordOut(BaseModel):
 class SolveRecordList(BaseModel):
     total: int
     items: list[SolveRecordOut]
+    next_cursor: Optional[str] = None
+    deleted: list[int] = Field(default_factory=list)
+    server_time: Optional[str] = None
 
 
 class AnswerLibraryOut(BaseModel):

@@ -209,6 +209,15 @@ def utcnow() -> datetime:
     return datetime.utcnow()
 
 
+def iso_utc_ms(value: datetime | None) -> str | None:
+    """ISO-8601 UTC，带毫秒（同步 v2 的 server_time 用）。"""
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value.isoformat(timespec="milliseconds") + "Z"
+
+
 def parse_client_datetime(value: Any) -> datetime | None:
     """解析客户端传来的原始时间：ISO-8601（带 Z / 偏移）、秒或毫秒时间戳。
 
