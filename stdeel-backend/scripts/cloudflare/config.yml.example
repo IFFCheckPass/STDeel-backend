@@ -1,0 +1,58 @@
+# ============================================================================
+# Cloudflare Tunnel 配置模板 —— 思谛 STDeel 后端
+# ============================================================================
+# 用法：复制到 /etc/cloudflared/config.yml，然后替换两个占位符：
+#   <TUNNEL_ID>  `cloudflared tunnel create stdeel` 输出的隧道 UUID
+#                （也可以写隧道名 stdeel，但写 UUID 更稳，改名/重名时不会指错）
+#   <DOMAIN>     已托管到 Cloudflare 的完整子域名，例如 stdeel.example.com
+#
+# 替换后校验（不需要先起服务）：
+#   sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
+#
+# 权限建议：root:root 644；目录 /etc/cloudflared 为 root:root 755。
+# 本文件不含密钥；真正的隧道私钥在 credentials-file 指向的 JSON 里（600，root-only）。
+# 严禁把本文件、凭据 JSON、cert.pem 提交进 git。
+
+# —— 隧道标识 ----------------------------------------------------------------
+# tunnel create 输出的 UUID。也就是 credentials JSON 的文件名去掉 .json。
+tunnel: <TUNNEL_ID>
+
+# —— 隧道凭据 ----------------------------------------------------------------
+# `tunnel create` 生成的 JSON（含隧道私钥）。
+# 服务以 root 运行 → 放在 /root/.cloudflared/；若改用普通用户跑服务，
+# 改成该用户的 ~/.cloudflared/<TUNNEL_ID>.json，并确保该用户可读（600）。
+credentials-file: /root/.cloudflared/<TUNNEL_ID>.json
+
+# —— 边缘连接协议 ------------------------------------------------------------
+# quic : 走 UDP 7844，延迟最低。本机实测可用，官方 precheck 也建议 quic。
+# http2: 走 TCP 443，仅在运营商/防火墙封 UDP 7844 时使用。本机实测可用。
+# auto : 交给 cloudflared 自选（不推荐生产，行为不透明）。
+protocol: quic
+
+# —— 自动更新 ----------------------------------------------------------------
+# 关闭 cloudflared 自更新：避免它自己重启服务、绕过部署流程。
+# 版本升级交给 apt（本机 /usr/bin/cloudflared 由 dpkg 包 cloudflared 管理）。
+no-autoupdate: true
+
+# —— 本机指标 / 健康端点 ------------------------------------------------------
+# 只监听 127.0.0.1，不对外暴露。可用来探活与排错：
+#   curl -s http://127.0.0.1:20241/ready
+#   curl -s http://127.0.0.1:20241/metrics | head
+metrics: 127.0.0.1:20241
+
+# —— 路由规则（ingress）------------------------------------------------------
+# 规则自上而下匹配，命中即停；最后一条必须是 catch-all，否则 cloudflared 拒绝启动。
+# 本方案只暴露一个子域名 → 本机 8500，其它 hostname/路径一律 404。
+ingress:
+  # 唯一对外入口：STDeel 后端（uvicorn 监听 127.0.0.1:8500）。
+  # 不加 path 规则 = 整个子域名都转发到 8500；后端中间件本身兼容任意路径前缀。
+  - hostname: <DOMAIN>
+    service: http://127.0.0.1:8500
+    # 可选：源站连接参数，默认值一般够用，需要时取消注释。
+    # originRequest:
+    #   connectTimeout: 30s       # 连不上源站时的超时；后端重启窗口内可调大
+    #   noTLSVerify: false        # 源站是 http，不涉及
+    #   httpHostHeader: <DOMAIN>  # 后端不依赖 Host 头，一般不用
+  # 兜底：其它 hostname / 路径返回 404，不会落到本机任何服务。
+  # 注意：不要在这里加 5480（宝塔面板）/5470（DSH）/80/443 —— 隧道能访问 127.0.0.1 的任意端口。
+  - service: http_status:404

@@ -102,6 +102,15 @@ uvicorn main:app --host 0.0.0.0 --port 8500 --workers 1
 
 数据库变更由 `main.py` 的 lifespan 自动执行（`migrations.run_migrations`，幂等）。
 
+## 公网访问（Cloudflare Tunnel）
+
+不用开放任何入站端口：cloudflared 主动出站连 Cloudflare 边缘，把一个子域名转发到本机 `127.0.0.1:8500`。
+完整 runbook（登录授权、建隧道、DNS、systemd、排错、回滚）见
+[docs/cloudflare-tunnel.md](docs/cloudflare-tunnel.md)。
+
+安全模型（2026-11-14 决定）：管理台/文档靠**后端密码**（不加 Cloudflare Access）；
+客户端同步 API 按契约仍无鉴权，靠「域名不公开 + 后续限流」缓解，风险与根治方案见 runbook §2.2。
+
 ## 数据与备份
 
 - `app.db` 及其 `-wal` / `-shm` 属于运行时数据，**不入版本库**（见 `.gitignore`）。

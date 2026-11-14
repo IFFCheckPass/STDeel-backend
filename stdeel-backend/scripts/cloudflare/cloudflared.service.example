@@ -1,0 +1,53 @@
+# ============================================================================
+# systemd 单元模板 —— cloudflared（思谛 STDeel 后端隧道）
+# ============================================================================
+# 两种安装方式，二选一：
+#   A. 用 cloudflared 自带命令（会自动生成一个类似的单元）：
+#        sudo cloudflared service install
+#        sudo systemctl enable --now cloudflared
+#   B. 手写（本模板，命令在 stdeel-work 仓库根目录执行）：
+#        sudo cp stdeel-backend/scripts/cloudflare/cloudflared.service.example /etc/systemd/system/cloudflared.service
+#        sudo systemctl daemon-reload
+#        sudo systemctl enable --now cloudflared
+#        sudo systemctl status cloudflared --no-pager
+#
+# 占位符：
+#   <TUNNEL_ID>  隧道 UUID（只出现在注释/可选 ExecStart 里；绑定关系实际写在
+#                /etc/cloudflared/config.yml 的 tunnel 键，见 config.yml.example）
+#   <DOMAIN>     对外子域名（只作备注，不参与启动参数）
+#
+# 本单元不存放任何凭据：身份信息全部在 /etc/cloudflared/config.yml 及其
+# credentials-file 指向的 JSON 里（root-only，600）。
+#
+# 日志：默认进 journald。
+#   sudo journalctl -u cloudflared -f
+
+[Unit]
+Description=Cloudflare Tunnel for STDeel backend (stdeel, <DOMAIN>, tunnel <TUNNEL_ID>)
+Documentation=https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+# 等网络就绪再连边缘，避免开机时空转重试
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# cloudflared 支持 sd_notify（READY=1），用 notify 时 systemctl start 会等它真正连上边缘。
+# 若本机版本 start 一直卡住（老版本不发 READY），改成 Type=simple 即可。
+Type=notify
+# 0 = 不限制启动等待（网络慢时有用）
+TimeoutStartSec=0
+# 隧道、ingress、protocol 全部从 config 读取，不在命令行重复参数
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run
+# 可选：不用 config.yml 里的 tunnel 键、直接指定隧道时，改成：
+# ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run <TUNNEL_ID>
+Restart=on-failure
+RestartSec=5s
+# 文件句柄上限；并发高时有必要
+LimitNOFILE=1048576
+# 可选加固（默认注释，确认无副作用再开）：
+# NoNewPrivileges=true
+# ProtectSystem=strict
+# ReadWritePaths=/etc/cloudflared
+# User=root
+
+[Install]
+WantedBy=multi-user.target
