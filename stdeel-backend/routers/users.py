@@ -9,9 +9,11 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import cryptostore
 from database import get_db
 from models import DeletedRecord, KnowledgeMastery, SolveRecord, User
 from schemas import (
+    ApiKeyMaskedOut,
     ApiKeyOut,
     ApiKeyPayload,
     KnowledgeMasteryItem,
@@ -76,12 +78,16 @@ def _load_api_keys(user: User) -> list[dict]:
     return [
         item
         for item in data
-        if isinstance(item, dict) and str(item.get("api_key") or "").strip()
+        if isinstance(item, dict) and (item.get("cipher") or str(item.get("api_key") or "").strip())
     ]
 
 
 def _normalize_api_keys(raw) -> list[dict]:
-    """把 [{api_key,name,enabled}] / ["sk-xxx"] / JSON 字符串统一成规范列表。"""
+    """把 [{api_key,name,enabled}] / ["sk-xxx"] / JSON 字符串统一成**加密条目**列表。
+
+    落库结构：{"name", "enabled", "cipher", "prefix", "suffix"}；
+    完整 Key 只在 cipher 里（cryptostore 加密），prefix/suffix 各 3 位供管理台展示。
+    """
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -95,7 +101,7 @@ def _normalize_api_keys(raw) -> list[dict]:
         if isinstance(entry, str):
             key = entry.strip()
             if key:
-                items.append({"api_key": key, "name": "", "enabled": True})
+                items.append(cryptostore.make_entry(key))
             continue
         if not isinstance(entry, dict):
             continue
@@ -103,11 +109,11 @@ def _normalize_api_keys(raw) -> list[dict]:
         if not key:
             continue
         items.append(
-            {
-                "api_key": key,
-                "name": as_clean_text(entry.get("name")),
-                "enabled": as_bool(entry.get("enabled"), True),
-            }
+            cryptostore.make_entry(
+                key,
+                as_clean_text(entry.get("name")),
+                as_bool(entry.get("enabled"), True),
+            )
         )
     return items
 
@@ -186,20 +192,31 @@ async def put_api_keys(body: ApiKeyPayload | None = None, db: AsyncSession = Dep
     return {"ok": True, "user_id": encode_user_id(user.id), "count": len(items)}
 
 
-@router.get("/api-key", response_model=list[ApiKeyOut], summary="拉取该用户的 AI API Key（换机同步/管理台）")
+@router.get("/api-key", response_model=list[ApiKeyOut], summary="拉取该用户的 AI API Key（换机同步用，返回解密后的完整值）")
 async def get_api_keys(user_id: str = Query(..., description="用户 id，支持 u_1 或 1"), db: AsyncSession = Depends(get_db)):
     user = await _require_user(db, user_id)
     public_id = encode_user_id(user.id)
-    return [
-        ApiKeyOut(
-            id=index,
-            user_id=public_id,
-            api_key=item["api_key"],
-            name=str(item.get("name") or ""),
-            enabled=bool(item.get("enabled", True)),
+    result: list[ApiKeyOut] = []
+    for index, item in enumerate(_load_api_keys(user), start=1):
+        try:
+            plain = cryptostore.plain_from_entry(item)
+        except ValueError as exc:
+            # 主密钥换了/丢了才会走到这里：宁可明确报错，也不要把掩码当 Key 回给客户端
+            logger.error("api-key 解密失败: user=%s err=%s", public_id, exc)
+            raise HTTPException(
+                status_code=500,
+                detail="服务端 API Key 主密钥不匹配，无法解密已保存的 Key（请恢复 api_key.key 备份）",
+            ) from exc
+        result.append(
+            ApiKeyOut(
+                id=index,
+                user_id=public_id,
+                api_key=plain,
+                name=str(item.get("name") or ""),
+                enabled=bool(item.get("enabled", True)),
+            )
         )
-        for index, item in enumerate(_load_api_keys(user), start=1)
-    ]
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -224,6 +241,25 @@ async def user_stats(db: AsyncSession = Depends(get_db)):
         )
     ).scalar_one()
     return UserStats(total_users=total, today_new=today_new, active_7d=active_7d, active_30d=active_30d)
+
+
+@router.get("/api-key-masked", response_model=list[ApiKeyMaskedOut], summary="管理台：只看得到前 3 / 后 3 位的 API Key（不解密）")
+async def get_api_keys_masked(
+    user_id: str = Query(..., description="用户 id，支持 u_1 或 1"),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await _require_user(db, user_id)
+    public_id = encode_user_id(user.id)
+    return [
+        ApiKeyMaskedOut(
+            id=index,
+            user_id=public_id,
+            masked=cryptostore.masked_entry(item),
+            name=str(item.get("name") or ""),
+            enabled=bool(item.get("enabled", True)),
+        )
+        for index, item in enumerate(_load_api_keys(user), start=1)
+    ]
 
 
 @router.get("", response_model=UserList)

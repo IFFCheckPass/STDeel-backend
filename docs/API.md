@@ -53,9 +53,26 @@
 
 全量覆盖（空数组即清空）。响应 `{ "ok": true, "user_id": "u_1", "count": 1 }`。
 
+> 落库是**加密**的（2026-11-14 起）：服务端只保存 `cipher`（v1 加密串）+ `prefix`/`suffix`（各 3 位，供展示）
+> + `name`/`enabled`，中间段没有任何明文；主密钥 `api_key.key` 在服务器上（0600）。
+> 客户端请求/响应格式不变，照旧传完整明文 Key。
+
 ### GET /users/api-key?user_id=u_1
 
-返回该用户已保存的 Key 列表（换机同步 / 管理台使用）。
+返回该用户已保存的 Key 列表（换机同步使用；服务端解密后返回完整值）。
+
+> 该接口按契约**不需要登录**，只靠 `user_id`；因此不要把它当管理接口用。
+> 管理台请改用下面的 `GET /users/api-key-masked`（需登录，只给掩码）。
+
+### GET /users/api-key-masked?user_id=u_1
+
+管理台专用（需登录），**不返回明文**，只返回 `masked`（前 3 位 + `******` + 后 3 位）：
+
+```json
+[{ "id": 1, "user_id": "u_9", "masked": "sk-******f08", "name": "DeepSeek", "enabled": true }]
+```
+
+Key 短于 7 位时整串掩码为 `******`。
 
 ---
 
@@ -186,7 +203,7 @@ Query：`user_id`（必填）、`correct_days`（默认 30）、`wrong_days`（�
 | `POST /files/upload` | multipart 图片上传（当前客户端未调用） |
 | `GET /webui` | 管理台（用户 / API Key / 掌握度 / 解题记录），**需登录**，见 §10 |
 | `GET /webui/login`、`POST /webui/login`、`POST /webui/logout` | 管理台登录 / 登出，见 §10 |
-| `GET /users`、`GET /users/stats`、`GET /users/{id}`、`GET /users/{id}/records`、`GET /users/{id}/mastery`、`DELETE /users/{id}` | 管理端接口，**需登录**，见 §10 |
+| `GET /users`、`GET /users/stats`、`GET /users/{id}`、`GET /users/{id}/records`、`GET /users/{id}/mastery`、`GET /users/api-key-masked`、`DELETE /users/{id}` | 管理端接口，**需登录**，见 §10 |
 
 ---
 
@@ -298,7 +315,7 @@ upsert 顺序：`(user_id, client_ref)` 命中 → `updated`；否则 `(user_id,
 |---|---|---|
 | 页面 | `/webui`、`/docs`、`/redoc` | `303` 跳到 `/webui/login` |
 | 文档数据 | `/openapi.json` | `401` JSON |
-| 管理端接口 | `GET /users`、`GET /users/stats`、`GET /users/{id}`、`GET /users/{id}/records`、`GET /users/{id}/mastery`、`DELETE /users/{id}` | `401` JSON |
+| 管理端接口 | `GET /users`、`GET /users/stats`、`GET /users/{id}`、`GET /users/{id}/records`、`GET /users/{id}/mastery`、`GET /users/api-key-masked`、`DELETE /users/{id}` | `401` JSON |
 | 客户端接口 | 其余全部（注册、解题记录、答案库、知识点、`GET/PUT /users/api-key`、`/files/upload`、`/healthz`） | 正常放行 |
 
 > 未配置管理密码时，上面这些受保护路径一律拒绝（页面仍跳登录页并提示如何设置，接口返回 `503`）。

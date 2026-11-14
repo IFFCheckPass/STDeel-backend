@@ -20,6 +20,7 @@ stdeel-backend/
 ├── migrations.py      # 旧库幂等升级（v1 → v2）
 ├── middleware.py      # 任意路径前缀适配 + 管理台鉴权 + 访问日志
 ├── adminauth.py       # 管理台密码哈希 / 会话令牌 / 登录限流 / set-password CLI
+├── cryptostore.py     # API Key 加密存储（纯标准库：PRF 流密码 + HMAC 完整性）
 ├── routers/           # users / solve_records / answer_library / knowledge / files
 ├── scripts/           # 验收自测、部署脚本、历史迁移脚本
 └── webui/             # 管理台页面（index.html）与登录页（login.html）
@@ -48,6 +49,8 @@ uvicorn main:app --host 0.0.0.0 --port 8500
 | `STDEEL_ADMIN_COOKIE` | `stdeel_admin` | 管理台会话 Cookie 名 |
 | `STDEEL_ADMIN_LOGIN_MAX_FAILURES` | `5` | 登录失败几次后锁定 |
 | `STDEEL_ADMIN_LOGIN_LOCK` | `900` | 锁定秒数 |
+| `STDEEL_API_KEY_SECRET_FILE` | `./api_key.key` | API Key 加密主密钥文件（32 字节 hex，0600） |
+| `STDEEL_API_KEY_SECRET` | 空 | 直接给主密钥（64 位 hex），优先于文件；只用于迁移/测试 |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
 
 ## 验收自测
@@ -87,6 +90,19 @@ sudo -u www /www/server/pyporject_evn/3.11.2venv/bin/python \
 - 登录失败 5 次锁 15 分钟（按来源 IP，Cloudflare Tunnel 下取 `CF-Connecting-IP`）。
 - 会话默认 12 小时，Cookie 为 `HttpOnly + SameSite=Lax`，HTTPS 访问时带 `Secure`。
 - 客户端同步接口（注册、解题记录、答案库、知识点、`/users/api-key`）**不受影响**。
+
+## API Key 加密存储
+
+用户保存的 AI API Key **不再明文落库**（2026-11-14 起）：
+
+- 库里每条只存：`cipher`（v1 加密串：PRF 流密码 + HMAC 完整性校验）、`prefix` / `suffix`（各 3 个字符，仅用于展示）、
+  `name`、`enabled`。中间段没有任何明文。
+- 主密钥：`api_key.key`（应用目录、0600、已 gitignore）；首次写入/迁移时自动生成。
+  **丢了它就解不开已存的 Key**，必须和 `app.db` 一起备份。
+- 客户端 `GET /users/api-key` 仍返回解密后的完整值（换机同步需要）；管理台改走
+  `GET /users/api-key-masked`，只显示「前 3 + `******` + 后 3」。
+- 老库启动时自动迁移明文→密文（幂等），迁移后自动 `VACUUM` 清掉旧数据页里的残留。
+- 主密钥对不上时 `GET /users/api-key` 返回 500 并提示恢复 `api_key.key`，不会把掩码当 Key 回给客户端。
 
 ## 部署（宝塔 Python 项目）
 

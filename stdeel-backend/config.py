@@ -55,6 +55,12 @@ ADMIN_SESSION_TTL_SECONDS = int(ADMIN_SESSION_TTL_HOURS * 3600)
 ADMIN_LOGIN_MAX_FAILURES = int(_env("STDEEL_ADMIN_LOGIN_MAX_FAILURES", "5"))
 ADMIN_LOGIN_LOCK_SECONDS = int(_env("STDEEL_ADMIN_LOGIN_LOCK", "900"))
 
+# ---- API Key 加密 --------------------------------------------------------
+# api_keys 列只存密文（前缀/后缀各 3 位单独存，用于展示）；主密钥 32 字节 hex，
+# 默认在项目目录 api_key.key（0600、已 gitignore），也可用 STDEEL_API_KEY_SECRET（64 位 hex）覆盖。
+# 注意：丢失主密钥 = 已保存的用户 API Key 无法解密，必须与数据库一起备份。
+API_KEY_SECRET_FILE = Path(_env("STDEEL_API_KEY_SECRET_FILE", str(BASE_DIR / "api_key.key")))
+
 # ---- Web ----------------------------------------------------------------
 # 客户端不带自定义 Header，故默认放开 CORS；生产环境可改成具体来源。
 CORS_ORIGINS = [o.strip() for o in _env("STDEEL_CORS_ORIGINS", "*").split(",") if o.strip()]

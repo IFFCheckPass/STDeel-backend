@@ -357,6 +357,16 @@ class ApiKeyOut(BaseModel):
     enabled: bool = True
 
 
+class ApiKeyMaskedOut(BaseModel):
+    """管理台展示用：只给前 3 / 后 3 位，中间段明文既不下发也不落库。"""
+
+    id: int
+    user_id: str
+    masked: str
+    name: str = ""
+    enabled: bool = True
+
+
 class FileUploadOut(BaseModel):
     path: str
     url: str

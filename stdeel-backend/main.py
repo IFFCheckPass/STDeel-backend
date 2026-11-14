@@ -27,9 +27,9 @@ from config import (
     LOG_LEVEL,
     UPLOAD_DIR,
 )
+import migrations
 from database import Base, async_session, engine
 from middleware import AccessLogMiddleware, AdminAuthMiddleware, PathPrefixMiddleware
-from migrations import run_migrations
 from routers import answer_library, files, knowledge, solve_records, users
 from services import recompute_all_mastery
 
@@ -40,12 +40,27 @@ logging.basicConfig(
 logger = logging.getLogger("stdeel")
 
 
+async def _scrub_after_api_key_encryption() -> None:
+    """API Key 明文转密文后重建数据库文件，避免旧明文残留在空闲页 / WAL（失败不阻塞启动）。"""
+    try:
+        async with engine.connect() as conn:
+            autocommit = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await autocommit.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+            await autocommit.exec_driver_sql("VACUUM")
+        logger.info("已 VACUUM 清理旧 API Key 明文残留")
+    except Exception:
+        logger.exception("VACUUM 清理失败（不影响启动，但旧明文可能残留在空闲页）")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("初始化数据库: %s", DATABASE_PATH)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        upgraded = await run_migrations(conn)
+        upgraded = await migrations.run_migrations(conn)
+
+    if migrations.LAST_ENCRYPTED_API_KEY_USERS:
+        await _scrub_after_api_key_encryption()
 
     if upgraded:
         # 升级后把派生数据对齐到明细，避免历史掌握度与解题记录不一致

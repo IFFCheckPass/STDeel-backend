@@ -17,5 +17,9 @@ backups/
 admin_auth.json
 .admin_auth.*.tmp
 
+# API Key 加密主密钥（32 字节 hex，0600；丢了等于已存的用户 Key 全部解不开）
+api_key.key
+.api_key.*.tmp
+
 # 编辑器/系统杂物
 .DS_Store

@@ -21,11 +21,15 @@ from datetime import datetime
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+import cryptostore
 from utils import question_hash
 
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = "2"
+
+# 本轮启动是否把明文 api-key 迁成了密文（main.py 据此决定要不要 VACUUM 清理旧数据页）
+LAST_ENCRYPTED_API_KEY_USERS = 0
 
 ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "solve_records": [
@@ -263,6 +267,74 @@ async def _migrate_api_keys(conn: AsyncConnection) -> None:
     logger.info("迁移：旧表 user_api_keys 已删除（数据已迁移）")
 
 
+async def _encrypt_api_keys(conn: AsyncConnection) -> int:
+    """把 users.api_keys 里的明文 Key 迁移成加密条目（幂等）。
+
+    新条目结构：{name, enabled, cipher, prefix, suffix}
+    - cipher：v1 加密串（见 cryptostore），完整 Key 只有它存；
+    - prefix / suffix：各 3 个字符，供管理台展示，中间段不落明文。
+    已经迁移过的条目原样保留；空 Key 直接丢弃。
+    """
+    global LAST_ENCRYPTED_API_KEY_USERS
+    LAST_ENCRYPTED_API_KEY_USERS = 0
+
+    if not await _table_exists(conn, "users"):
+        return 0
+
+    rows = (
+        await conn.execute(
+            text("SELECT id, api_keys FROM users WHERE api_keys IS NOT NULL AND TRIM(api_keys) <> ''")
+        )
+    ).all()
+
+    changed = 0
+    for user_id, raw in rows:
+        try:
+            items = json.loads(raw or "[]")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(items, list):
+            continue
+
+        migrated: list[dict] = []
+        dirty = False
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("cipher") and not item.get("api_key"):
+                # 已加密：保持原样（清掉可能残留的旧明文字段）
+                migrated.append(
+                    {
+                        "name": str(item.get("name") or ""),
+                        "enabled": bool(item.get("enabled", True)),
+                        "cipher": str(item.get("cipher")),
+                        "prefix": str(item.get("prefix") or ""),
+                        "suffix": str(item.get("suffix") or ""),
+                    }
+                )
+                continue
+            plain = str(item.get("api_key") or item.get("key") or "").strip()
+            if not plain:
+                continue
+            migrated.append(
+                cryptostore.make_entry(plain, str(item.get("name") or ""), bool(item.get("enabled", True)))
+            )
+            dirty = True
+
+        if not dirty:
+            continue
+        await conn.execute(
+            text("UPDATE users SET api_keys=:value WHERE id=:uid"),
+            {"value": json.dumps(migrated, ensure_ascii=False), "uid": user_id},
+        )
+        changed += 1
+
+    LAST_ENCRYPTED_API_KEY_USERS = changed
+    if changed:
+        logger.info("迁移：%d 个用户的 API Key 已转为加密存储（前3/后3 保留展示）", changed)
+    return changed
+
+
 async def _drop_fts(conn: AsyncConnection) -> None:
     """移除旧 FTS5 索引与触发器（中文分词无效，匹配改走 LIKE + 相似度）。"""
     statements = [
@@ -399,6 +471,8 @@ async def run_migrations(conn: AsyncConnection) -> bool:
         await _normalize_mastery(conn)
 
     await _migrate_api_keys(conn)
+    # 旧表并入后统一加密；已加密的条目不动，因此每次启动都可安全重跑
+    await _encrypt_api_keys(conn)
     await _drop_fts(conn)
     await _backfill_answer_hashes(conn)
     await _create_indexes(conn)

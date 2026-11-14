@@ -165,15 +165,17 @@ async function loadApiKeys(userId) {
   const box = $('#apiKeyBox');
   box.innerHTML = '<span class="empty">加载中…</span>';
   try {
-    const res = await api(`/users/api-key?user_id=${enc(userId)}`);
+    // 管理台只拿掩码：服务端返回前 3 / 后 3 位，完整 Key 只在密文里，不下发
+    const res = await api(`/users/api-key-masked?user_id=${enc(userId)}`);
     const keys = await res.json();
     if (!keys || !keys.length) { box.innerHTML = '<span class="empty">该用户暂无 API Key</span>'; return; }
     box.innerHTML = keys.map(k => `
       <div style="padding:8px 0;border-bottom:1px solid #26324a">
         <div><span class="pill ${k.enabled?'on':'off'}">${k.enabled?'启用':'停用'}</span>
         <span class="meta">${esc(k.name || '未命名')}</span></div>
-        <div class="mono" style="margin-top:4px">${esc(k.api_key)}</div>
-      </div>`).join('');
+        <div class="mono" style="margin-top:4px">${esc(k.masked)}</div>
+      </div>`).join('')
+      + '<div class="meta" style="margin-top:8px">为保护 Key，这里只显示前 3 位和后 3 位；完整值仅客户端换机同步时可取。</div>';
   } catch(e) {
     box.innerHTML = `<span class="empty">加载失败：${esc(e.message)}</span>`;
   }

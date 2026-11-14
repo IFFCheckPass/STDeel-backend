@@ -133,12 +133,15 @@ find "$APP_DIR" -type d -exec chmod 755 {} \;
 # 只补读权限，不改可执行位（否则仓库会因为 mode 变化一直显示 modified）
 find "$APP_DIR" -type f -exec chmod a+r {} \;
 [ -f "$APP_DIR/app.db" ] && chmod 664 "$APP_DIR/app.db"
-# 管理台凭据只给服务账号读；上面那句 a+r 会放开，这里收回来
-if [ -f "$APP_DIR/admin_auth.json" ]; then
-  chown www:www "$APP_DIR/admin_auth.json"
-  chmod 600 "$APP_DIR/admin_auth.json"
-  echo "管理台密码已配置（admin_auth.json 0600）"
-else
+# 凭据类文件只给服务账号读；上面那句 a+r 会放开，这里收回来
+for secret_file in admin_auth.json api_key.key; do
+  if [ -f "$APP_DIR/$secret_file" ]; then
+    chown www:www "$APP_DIR/$secret_file"
+    chmod 600 "$APP_DIR/$secret_file"
+    echo "$secret_file 已收回 0600（www:www）"
+  fi
+done
+if [ ! -f "$APP_DIR/admin_auth.json" ]; then
   echo "管理台密码尚未配置（部署完成后需执行一次 set-password）"
 fi
 echo "已归属 www:www"
@@ -163,6 +166,14 @@ if [ "$OK" -eq 1 ]; then
   echo
   echo "部署完成 ✔  备份在：$BACKUP_DIR"
   echo "管理台：http://127.0.0.1:$PORT/webui   接口文档：http://127.0.0.1:$PORT/docs"
+  # API Key 主密钥由应用启动时按需生成（迁移明文时就会生成），这里补一次权限兜底
+  if [ -f "$APP_DIR/api_key.key" ]; then
+    chown www:www "$APP_DIR/api_key.key"
+    chmod 600 "$APP_DIR/api_key.key"
+    echo "API Key 主密钥：已就绪（api_key.key 0600）"
+  else
+    echo "API Key 主密钥：未生成（尚无用户 Key 写入；首次保存或迁移时自动生成）"
+  fi
   if [ -f "$APP_DIR/admin_auth.json" ]; then
     echo "管理台密码：已配置（登录 /webui 会要求输密码）"
   else
