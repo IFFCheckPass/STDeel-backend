@@ -104,8 +104,9 @@ uvicorn main:app --host 0.0.0.0 --port 8500 --workers 1
 
 ## 公网访问（Cloudflare Tunnel）
 
-不用开放任何入站端口：cloudflared 主动出站连 Cloudflare 边缘，把一个子域名转发到本机 `127.0.0.1:8500`。
-完整 runbook（登录授权、建隧道、DNS、systemd、排错、回滚）见
+**已开通（2026-11-14）**：`https://stdeel.snserver.dpdns.org` → 本机 `127.0.0.1:8500`。
+不用开放任何入站端口：cloudflared（systemd 服务 `cloudflared`）主动出站连 Cloudflare 边缘，QUIC 4 条连接。
+完整 runbook（登录授权、建隧道、DNS、systemd、运维命令、排错、回滚）见
 [docs/cloudflare-tunnel.md](docs/cloudflare-tunnel.md)。
 
 安全模型（2026-11-14 决定）：管理台/文档靠**后端密码**（不加 Cloudflare Access）；

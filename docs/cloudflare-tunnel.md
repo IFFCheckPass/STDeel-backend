@@ -5,9 +5,11 @@
 >
 > 本机：snserver（Debian 12 / cloudflared 2026.8.2 / systemd 252 / 内网 192.168.2.60）。
 >
-> 状态（2026-11-14）：**出网与隧道连通性已验证通过，QUIC 与 HTTP/2 两条路都可用**（实测记录见附录 A）。
+> 状态（2026-11-14 11:37）：**已开通** —— `https://stdeel.snserver.dpdns.org` → `127.0.0.1:8500`，
+> tunnel `stdeel` = `54baabb0-54ed-44cd-bab2-57205fc1a71e`，QUIC 4 条连接（lax08/10/13），systemd 开机自启。
+> 开通记录、证书获取踩坑与运维见 §0.1–§0.2；QUIC/HTTP2 连通性实测见附录 A。
 > 管理台密码登录已落地并部署（commit 81d5653 + 8a572ec，见 §2.1）；客户端同步 API 仍无鉴权（见 §2.2）。
-> 还缺用户的域名，拿到域名后按第 3–8 节顺序执行即可。所有需要 root 的命令都用 `sudo`（本机 sudo 需要密码，由 Lead 执行）。
+> 所有需要 root 的命令都用 `sudo`（本机 sudo 需要密码，由 Lead 执行）。
 >
 > 安全说明：本文不包含任何 cert.pem / credentials / token 的内容。文中 `<...>` 是占位符，**必须替换成真实值**再执行，
 > 不能原样粘贴进 shell（bash 会把 `<` 当重定向）。
@@ -17,14 +19,54 @@
 | 项 | 结论 |
 |---|---|
 | cloudflared 安装 | 已装：`/usr/local/bin/cloudflared` → `/usr/bin/cloudflared`（dpkg 包 `cloudflared`，版本 2026.8.2） |
-| 现状缺口 | 无 systemd 单元、无 `/etc/cloudflared`、`~/.cloudflared` 为空、无 cert.pem —— 本文负责补齐 |
+| 部署状态 | ✅ 已装 systemd 单元、`/etc/cloudflared/config.yml`、cert.pem 与隧道凭据，服务 enabled（2026-11-14） |
 | 出网 / 隧道连通性 | ✅ 通过（quick tunnel 实测） |
 | QUIC（出站 UDP 7844） | ✅ 可用：官方预检 `UDP Connectivity: QUIC connection successful`，实连 `protocol=quic` |
 | HTTP/2 回退（出站 TCP 443） | ✅ 可用：强制后 `protocol=http2`，公网 GET 200 |
 | 暴露面 | 只暴露 1 个子域名 → 127.0.0.1:8500；5480（宝塔）、5470（DSH）、80/443（nginx）都不进 ingress |
 | 管理面鉴权 | ✅ 2026-11-14 已上线「管理台密码登录」：`/webui`、`/docs`、`/redoc` 未登录 303 跳登录页，`/openapi.json` 与管理端 JSON 接口未登录 401；未配置密码时 fail-closed。见 §2.1 |
 | 客户端 API 鉴权 | ❌ 仍无（注册、解题记录、答案库、知识点、`/users/api-key` 都靠 `user_id`，契约如此）→ 拿到域名的人可读写同步数据，风险见 §2.2 |
-| 阻塞项 | ① **用户域名/zone（唯一硬阻塞）**；② 上线前必须先配好管理台密码（本文写作时本机 `/openapi.json` 仍返回 503，说明尚未配置）；③ 已定：不用 Access，只靠后端密码；④ 已定：8500 暂保持 `0.0.0.0` |
+| 决策 | ① 域名 = `stdeel.snserver.dpdns.org`；② 不用 Access，只靠后端密码；③ 8500 保持 `0.0.0.0` 不动（内网使用不受影响） |
+
+### 0.1 当前线上状态（2026-11-14 已开通）
+
+| 项 | 值 |
+|---|---|
+| 公网地址 | `https://stdeel.snserver.dpdns.org`（Cloudflare 代理，HTTP/2 200） |
+| Cloudflare zone | `snserver.dpdns.org`（NS = archer/wanda.ns.cloudflare.com） |
+| 隧道 | 名称 `stdeel`，ID `54baabb0-54ed-44cd-bab2-57205fc1a71e`（凭据 `/root/.cloudflared/<ID>.json`，root 600） |
+| DNS | `stdeel.snserver.dpdns.org` → CNAME `<TUNNEL_ID>.cfargotunnel.com`（橙云代理） |
+| 配置 | `/etc/cloudflared/config.yml`（由 `scripts/cloudflare/config.yml.example` 生成，`ingress validate` OK） |
+| 服务 | `systemctl status cloudflared` → active (running) / enabled；ExecStart：`cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run` |
+| 协议 | QUIC（出站 UDP 7844），4 条连接分布 lax08/lax10/lax13 |
+| 本机指标 | `curl -s http://127.0.0.1:20241/ready` → `readyConnections` |
+| 线上验证 | `/healthz` 200 + `version=2.0.0`；`/webui` 303 → `/webui/login`；`/openapi.json`、`/users` 401；客户端 API 200/404（未被拦） |
+
+> **遗留**：Cloudflare 账号里还有一条 2026-11-13 创建、从未连过的隧道 `STDeel`（`78167f8f-dc30-4425-b3d7-f9582aabc9e7`）。
+> 本次已用 `route dns --overwrite-dns` 把 DNS 指到新隧道；确认没有别的服务依赖后，可在 Zero Trust → Networks → Tunnels 里删掉。
+
+### 0.2 证书获取踩坑（重要）
+
+本机网络对 `login.cloudflareaccess.org`（Tunnel 证书回调域名）**做 SNI 重置**：
+`cloudflared tunnel login` 能打开授权页并完成授权，但随后下载证书时必定报
+`read: connection reset by peer`，证书写不进 `/root/.cloudflared/cert.pem`。
+
+- 实测：`curl https://login.cloudflareaccess.org/` → 连接被重置；`login.cloudflareaccess.com` 正常（但证书下载仍写死 `.org`）。
+- `--callbackURL https://login.cloudflareaccess.com/` **不能绕过**：它只改授权页里的回调参数，cloudflared 取证书时仍连 `login.cloudflareaccess.org`。
+- **可行做法**：授权后浏览器会直接下载 `cert.pem`，把该文件手动放到 `/root/.cloudflared/cert.pem`
+  （`chmod 600`、root:root），之后 `cloudflared tunnel list` 即正常，不用重新登录。
+- 注意：DSH 的安全网会拦截 agent 访问任何 `.pem` 路径（`secret.ext.pem`），所以这一步**必须由人操作**。
+
+### 0.3 日常运维
+
+```bash
+systemctl status cloudflared --no-pager     # 是否在线
+sudo journalctl -u cloudflared -n 50        # 连接/错误日志（Registered tunnel connection ... protocol=quic）
+curl -s http://127.0.0.1:20241/ready        # 本机探活：readyConnections ≥ 1
+sudo cloudflared tunnel info stdeel         # 连接列表
+sudo systemctl restart cloudflared          # 改完 /etc/cloudflared/config.yml 后重启生效
+sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate   # 改配置先校验
+```
 
 ## 1. 拓扑与各组件位置
 
@@ -448,8 +490,8 @@ cloudflared tunnel --url http://127.0.0.1:18080 --protocol quic --no-autoupdate 
 
 ## 附录 B：待用户/Lead 确认
 
-1. **域名**：哪个 Cloudflare zone、子域名用什么（例如 `stdeel.<domain>`）——**唯一硬阻塞项**。
-2. **管理台密码**：上线前必须先配置（内网浏览器或服务器 CLI，见 §2.1）。截至本文写作时本机 `/openapi.json` 仍返回 503，说明**尚未配置**，需先设好再开隧道。
+1. ✅ 已定（2026-11-14）：域名 = `stdeel.snserver.dpdns.org`（zone `snserver.dpdns.org`），隧道已开通并验证。
+2. ✅ 已定（2026-11-14）：管理台密码已由主人自行设置（公开 `/openapi.json` 返回 401，说明已生效）。
 3. ✅ 已定（2026-11-14）：不加 Cloudflare Access，只靠后端管理密码；接受客户端 API 公开的弱模型（见 §2.2，尤其 `/users/api-key` 可枚举回传 AI Key）。
 4. ✅ 已定（2026-11-14）：8500 暂保持 `0.0.0.0`（不影响隧道；局域网客户端可能依赖，后续再评估收窄）。
 5. ✅ 已定（2026-11-14）：用 `cloudflared service install --no-update-service`，版本升级交给 apt，不自动重启。
