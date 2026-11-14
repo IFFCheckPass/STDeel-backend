@@ -69,6 +69,7 @@
   <div class="toolbar">
     <span class="sub" id="totalLabel"></span>
     <button class="btn" onclick="refreshAll()">↻ 刷新</button>
+    <button class="btn" onclick="logout()">退出</button>
   </div>
 </header>
 
@@ -105,13 +106,28 @@
 const $ = s => document.querySelector(s);
 let all = [];
 
+// 统一请求封装：会话过期（401）或密码未配置（503）时直接回登录页，避免页面显示半截数据
+async function api(url, opts) {
+  const res = await fetch(url, opts);
+  if (res.status === 401 || res.status === 503) {
+    location.href = '/webui/login?next=' + encodeURIComponent(location.pathname);
+    throw new Error('需要登录');
+  }
+  return res;
+}
+
+async function logout() {
+  try { await fetch('/webui/logout', { method: 'POST' }); } catch (e) {}
+  location.href = '/webui/login';
+}
+
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function enc(s) { return encodeURIComponent(String(s ?? '')); }
 
 async function loadUsers() {
-  const res = await fetch('/users?page=1&page_size=100');
+  const res = await api('/users?page=1&page_size=100');
   const data = await res.json();
   all = data.items || [];
   $('#totalLabel').textContent = `用户数：${data.total}`;
@@ -149,7 +165,7 @@ async function loadApiKeys(userId) {
   const box = $('#apiKeyBox');
   box.innerHTML = '<span class="empty">加载中…</span>';
   try {
-    const res = await fetch(`/users/api-key?user_id=${enc(userId)}`);
+    const res = await api(`/users/api-key?user_id=${enc(userId)}`);
     const keys = await res.json();
     if (!keys || !keys.length) { box.innerHTML = '<span class="empty">该用户暂无 API Key</span>'; return; }
     box.innerHTML = keys.map(k => `
@@ -169,7 +185,7 @@ async function loadMastery(userId) {
   const box = $('#masteryBox');
   box.innerHTML = '<span class="empty">加载中…</span>';
   try {
-    const res = await fetch(`/users/${enc(userId)}/mastery`);
+    const res = await api(`/users/${enc(userId)}/mastery`);
     const data = await res.json();
     const items = data.items || [];
     if (!items.length) { box.innerHTML = '<span class="empty">暂无知识点掌握数据</span>'; return; }
@@ -204,7 +220,7 @@ async function loadRecords(userId) {
   const box = $('#recordsBox');
   box.innerHTML = '<span class="empty">加载中…</span>';
   try {
-    const res = await fetch(`/users/${enc(userId)}/records?limit=100`);
+    const res = await api(`/users/${enc(userId)}/records?limit=100`);
     const records = await res.json();
     if (!Array.isArray(records) || !records.length) { box.innerHTML = '<span class="empty">该用户暂无解题记录</span>'; return; }
     box.innerHTML = records.map(r => {
@@ -234,7 +250,7 @@ async function deleteUser(userId, username) {
   const ok = confirm(`确定删除用户「${username}」(${userId})？\n将一并删除其解题记录、知识点掌握、API Key，且不可恢复！`);
   if (!ok) return;
   try {
-    const res = await fetch(`/users/${enc(userId)}`, { method: 'DELETE' });
+    const res = await api(`/users/${enc(userId)}`, { method: 'DELETE' });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       alert('删除失败：' + (body.detail || res.status));

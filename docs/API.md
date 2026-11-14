@@ -8,7 +8,7 @@
 | 项 | 说明 |
 |---|---|
 | Base URL | 后端同时监听「根路径」与「任意路径前缀」。`https://host/api/v1/users/register`、`https://host/stapi/users/register`、`https://host/users/register` 等价 |
-| 鉴权 | 无 Token / Cookie；身份仅由 `user_id` 表达（与当前客户端一致） |
+| 鉴权 | **客户端接口**无 Token / Cookie，身份仅由 `user_id` 表达（与当前客户端一致）；**管理台页面与管理端接口**需要管理密码登录（见 §10） |
 | user_id | 对外形如 `u_1`；同时兼容老客户端的纯数字 `1`（入参、query 均可） |
 | 成功判定 | 2xx |
 | 幂等 | `POST /solve-records`（形态 B）、`PATCH`、`DELETE`、`PUT /users/api-key` 均幂等 |
@@ -184,8 +184,9 @@ Query：`user_id`（必填）、`correct_days`（默认 30）、`wrong_days`（�
 | `GET /healthz` | 健康检查，host 根路径（忽略 Base URL 前缀），不访问数据库 |
 | `GET /health` | 同上（兼容旧地址） |
 | `POST /files/upload` | multipart 图片上传（当前客户端未调用） |
-| `GET /webui` | 管理台（用户 / API Key / 掌握度 / 解题记录） |
-| `GET /users`、`GET /users/{id}`、`GET /users/{id}/records`、`DELETE /users/{id}` | 管理端接口 |
+| `GET /webui` | 管理台（用户 / API Key / 掌握度 / 解题记录），**需登录**，见 §10 |
+| `GET /webui/login`、`POST /webui/login`、`POST /webui/logout` | 管理台登录 / 登出，见 §10 |
+| `GET /users`、`GET /users/stats`、`GET /users/{id}`、`GET /users/{id}/records`、`GET /users/{id}/mastery`、`DELETE /users/{id}` | 管理端接口，**需登录**，见 §10 |
 
 ---
 
@@ -283,3 +284,50 @@ upsert 顺序：`(user_id, client_ref)` 命中 → `updated`；否则 `(user_id,
 
 `DELETE /solve-records/{id}` 会在 `deleted_records` 表记一条墓碑，供
 `GET ?include_deleted=1` 回传，客户端据此清理本地已同步记录。
+
+---
+
+## 10. 管理台鉴权
+
+管理台（`/webui`）能看到全部用户、解题记录与 API Key，所以必须输密码才能进入。
+这一套只作用在「人看的页面」和「管理端接口」上，**客户端同步接口不变**。
+
+### 10.1 受保护范围
+
+| 类型 | 路径 | 未登录时 |
+|---|---|---|
+| 页面 | `/webui`、`/docs`、`/redoc` | `303` 跳到 `/webui/login` |
+| 文档数据 | `/openapi.json` | `401` JSON |
+| 管理端接口 | `GET /users`、`GET /users/stats`、`GET /users/{id}`、`GET /users/{id}/records`、`GET /users/{id}/mastery`、`DELETE /users/{id}` | `401` JSON |
+| 客户端接口 | 其余全部（注册、解题记录、答案库、知识点、`GET/PUT /users/api-key`、`/files/upload`、`/healthz`） | 正常放行 |
+
+> 未配置管理密码时，上面这些受保护路径一律拒绝（页面仍跳登录页并提示如何设置，接口返回 `503`）。
+
+### 10.2 登录 / 登出
+
+```http
+POST /webui/login
+Content-Type: application/x-www-form-urlencoded
+
+password=<管理密码>&next=/webui
+```
+
+- 成功：`303` 跳到 `next`（只接受站内相对路径），并下发会话 Cookie
+  `stdeel_admin`（`HttpOnly`、`SameSite=Lax`，经 HTTPS 访问时带 `Secure`）。
+- 失败：`303` 回 `/webui/login?error=1`；连续失败 5 次锁 15 分钟（`error=locked`）。
+- 登出：`POST /webui/logout`，清 Cookie 后回登录页。
+- 会话默认 12 小时；**改密码会让所有旧会话立即失效**。
+
+### 10.3 运维命令
+
+```bash
+# 设置/重置密码（输入不回显，只保存加盐哈希）
+sudo -u www /www/server/pyporject_evn/3.11.2venv/bin/python \
+    /www/wwwroot/stdeel-backend/stdeel-backend/adminauth.py set-password
+# 只看状态，不看密码
+sudo -u www /www/server/pyporject_evn/3.11.2venv/bin/python \
+    /www/wwwroot/stdeel-backend/stdeel-backend/adminauth.py status
+```
+
+凭据文件是应用目录下的 `admin_auth.json`（`0600`，不入 git，部署保留），
+改完按 mtime 自动重载，不需要重启服务。

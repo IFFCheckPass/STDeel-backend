@@ -6,15 +6,28 @@
 
 import logging
 from contextlib import asynccontextmanager
+from html import escape as html_escape
+from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from config import APP_NAME, APP_VERSION, BASE_DIR, CORS_ORIGINS, DATABASE_PATH, LOG_LEVEL, UPLOAD_DIR
+import adminauth
+from config import (
+    ADMIN_COOKIE_NAME,
+    ADMIN_SESSION_TTL_SECONDS,
+    APP_NAME,
+    APP_VERSION,
+    BASE_DIR,
+    CORS_ORIGINS,
+    DATABASE_PATH,
+    LOG_LEVEL,
+    UPLOAD_DIR,
+)
 from database import Base, async_session, engine
-from middleware import AccessLogMiddleware, PathPrefixMiddleware
+from middleware import AccessLogMiddleware, AdminAuthMiddleware, PathPrefixMiddleware
 from migrations import run_migrations
 from routers import answer_library, files, knowledge, solve_records, users
 from services import recompute_all_mastery
@@ -60,8 +73,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 中间件注册顺序：后注册的在外层（CORS -> 路径前缀 -> 访问日志 -> 路由）
+# 中间件注册顺序：后注册的在外层（CORS -> 路径前缀 -> 管理台鉴权 -> 访问日志 -> 路由）
 app.add_middleware(AccessLogMiddleware, logger=logger)
+app.add_middleware(AdminAuthMiddleware)
 app.add_middleware(PathPrefixMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -87,6 +101,19 @@ app.include_router(files.router)
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 WEBUI_INDEX = BASE_DIR / "webui" / "index.html"
+LOGIN_INDEX = BASE_DIR / "webui" / "login.html"
+
+# 未配置密码时登录页会原样展示这条命令；不含任何凭据，只告诉在哪里设密码
+SETUP_COMMAND = (
+    "sudo -u www /www/server/pyporject_evn/3.11.2venv/bin/python "
+    "/www/wwwroot/stdeel-backend/stdeel-backend/adminauth.py set-password"
+)
+
+_LOGIN_NOTICES = {
+    "1": "密码不正确",
+    "locked": "尝试次数过多，已暂时锁定，请稍后再试",
+    "denied": "来源校验失败，请直接从管理台登录",
+}
 
 
 @app.get("/", include_in_schema=False)
@@ -99,6 +126,126 @@ async def index():
         "admin": "/webui",
         "base_url_hint": "任意路径前缀均可，例如 /api/v1",
     }
+
+
+# --------------------------------------------------------------------------
+# 管理台登录（页面本身公开，不含任何业务数据）
+# --------------------------------------------------------------------------
+def _client_ip(request: Request) -> str:
+    """真实来源 IP：Cloudflare Tunnel 场景下看 CF-Connecting-IP，其次 X-Forwarded-For。"""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    return (
+        request.headers.get("cf-connecting-ip")
+        or (forwarded.split(",")[0].strip() if forwarded else "")
+        or (request.client.host if request.client else "")
+    ).strip()
+
+
+def _is_https(request: Request) -> bool:
+    """Cloudflare Tunnel 到源站是 HTTP，靠 X-Forwarded-Proto 判断对外是否 HTTPS。"""
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    if forwarded.split(",")[0].strip().lower() == "https":
+        return True
+    return request.url.scheme == "https"
+
+
+def _safe_next(raw: str) -> str:
+    """只允许站内相对路径，避免开放重定向。"""
+    text = (raw or "").strip()
+    if not text.startswith("/") or text.startswith("//"):
+        return "/webui"
+    return text
+
+
+def _login_page_html(next_path: str, error: str) -> str:
+    configured = adminauth.is_configured()
+    if not configured:
+        notice = (
+            '<div class="notice"><strong>尚未配置管理密码</strong><br>'
+            "管理台已拒绝访问。请在服务器执行下面的命令设置密码（输入不回显），然后刷新本页："
+            '<pre class="cmd">' + html_escape(SETUP_COMMAND) + "</pre></div>"
+        )
+    elif error in _LOGIN_NOTICES:
+        notice = '<div class="notice">' + html_escape(_LOGIN_NOTICES[error]) + "</div>"
+    else:
+        notice = ""
+
+    template = (
+        LOGIN_INDEX.read_text(encoding="utf-8")
+        if LOGIN_INDEX.is_file()
+        else '<!DOCTYPE html><meta charset="utf-8"><body><h1>管理台登录页缺失</h1></body>'
+    )
+    return (
+        template.replace("%%BODY_CLASS%%", "" if configured else "unconfigured")
+        .replace("%%NOTICE%%", notice)
+        .replace("%%NEXT%%", html_escape(next_path, quote=True))
+    )
+
+
+@app.get("/webui/login", include_in_schema=False)
+async def webui_login_page(request: Request, error: str = "", next: str = "/webui"):
+    next_path = _safe_next(next)
+    if adminauth.token_valid(request.cookies.get(ADMIN_COOKIE_NAME)):
+        return RedirectResponse(url=next_path, status_code=303)
+    return HTMLResponse(
+        _login_page_html(next_path, error),
+        headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer"},
+    )
+
+
+@app.post("/webui/login", include_in_schema=False)
+async def webui_login_submit(request: Request):
+    form = await request.form()
+    password = str(form.get("password") or "")
+    next_path = _safe_next(str(form.get("next") or "/webui"))
+
+    # 简单 CSRF 兜底：带 Origin 的提交必须和当前 Host 一致
+    origin = request.headers.get("origin", "")
+    if origin:
+        origin_netloc = urlsplit(origin).netloc
+        if origin_netloc and origin_netloc != request.headers.get("host", ""):
+            logger.warning("管理台登录来源不合法: origin=%s", origin_netloc)
+            return RedirectResponse(url="/webui/login?error=denied", status_code=303)
+
+    if not adminauth.is_configured():
+        return RedirectResponse(url="/webui/login?error=unconfigured", status_code=303)
+
+    ip = _client_ip(request)
+    if adminauth.limiter.locked_for(ip):
+        logger.warning("管理台登录被限流: ip=%s", ip)
+        return RedirectResponse(
+            url="/webui/login?error=locked&next=" + quote(next_path, safe="/"), status_code=303
+        )
+
+    if not adminauth.verify_password(password):
+        adminauth.limiter.register_failure(ip)
+        logger.warning("管理台登录失败: ip=%s", ip)
+        return RedirectResponse(url="/webui/login?error=1&next=" + quote(next_path, safe="/"), status_code=303)
+
+    token = adminauth.create_token()
+    if not token:
+        return RedirectResponse(url="/webui/login?error=unconfigured", status_code=303)
+
+    adminauth.limiter.reset(ip)
+    logger.info("管理台登录成功: ip=%s", ip)
+    response = RedirectResponse(url=next_path, status_code=303)
+    response.set_cookie(
+        key=ADMIN_COOKIE_NAME,
+        value=token,
+        max_age=ADMIN_SESSION_TTL_SECONDS,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=_is_https(request),
+    )
+    return response
+
+
+@app.post("/webui/logout", include_in_schema=False)
+async def webui_logout():
+    response = RedirectResponse(url="/webui/login", status_code=303)
+    response.delete_cookie(ADMIN_COOKIE_NAME, path="/")
+    return response
 
 
 @app.get("/healthz", tags=["health"], summary="健康检查（host 根路径，忽略 Base URL 前缀）")

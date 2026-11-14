@@ -13,5 +13,9 @@ data/
 uploads/
 backups/
 
+# 管理台凭据（只存加盐哈希 + 会话密钥，绝不入库）
+admin_auth.json
+.admin_auth.*.tmp
+
 # 编辑器/系统杂物
 .DS_Store

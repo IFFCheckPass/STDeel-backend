@@ -17,6 +17,7 @@ SERVICE="stdeel-backend"
 PID_FILE="/www/server/python_project/vhost/pids/${SERVICE}.pid"
 START_SCRIPT="/www/server/python_project/vhost/scripts/${SERVICE}_cmd.sh"
 BACKUP_ROOT="/root/stdeel-backend-backups"
+PY_BIN="/www/server/pyporject_evn/3.11.2venv/bin/python"
 TS="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="$BACKUP_ROOT/$TS"
 SOURCE_CLONE="${1:-}"
@@ -120,13 +121,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-log "5/6 权限与缓存"
+log "5/6 语法自检、权限与缓存"
 rm -rf "$APP_DIR"/__pycache__ "$APP_DIR"/routers/__pycache__
+# 启动前先做语法自检，坏代码不上线
+if ! "$PY_BIN" -m py_compile "$APP_DIR"/main.py "$APP_DIR"/adminauth.py \
+     "$APP_DIR"/middleware.py "$APP_DIR"/config.py; then
+  fail "Python 语法自检失败，未启动服务。回滚：tar xzf $BACKUP_DIR/project.tar.gz -C /www/wwwroot"
+fi
 chown -R www:www "$REPO_DIR"
 find "$APP_DIR" -type d -exec chmod 755 {} \;
 # 只补读权限，不改可执行位（否则仓库会因为 mode 变化一直显示 modified）
 find "$APP_DIR" -type f -exec chmod a+r {} \;
 [ -f "$APP_DIR/app.db" ] && chmod 664 "$APP_DIR/app.db"
+# 管理台凭据只给服务账号读；上面那句 a+r 会放开，这里收回来
+if [ -f "$APP_DIR/admin_auth.json" ]; then
+  chown www:www "$APP_DIR/admin_auth.json"
+  chmod 600 "$APP_DIR/admin_auth.json"
+  echo "管理台密码已配置（admin_auth.json 0600）"
+else
+  echo "管理台密码尚未配置（部署完成后需执行一次 set-password）"
+fi
 echo "已归属 www:www"
 
 # ---------------------------------------------------------------------------
@@ -149,6 +163,12 @@ if [ "$OK" -eq 1 ]; then
   echo
   echo "部署完成 ✔  备份在：$BACKUP_DIR"
   echo "管理台：http://127.0.0.1:$PORT/webui   接口文档：http://127.0.0.1:$PORT/docs"
+  if [ -f "$APP_DIR/admin_auth.json" ]; then
+    echo "管理台密码：已配置（登录 /webui 会要求输密码）"
+  else
+    echo "管理台密码：尚未配置（现在 /webui 与 /docs 会拒绝访问）。设置命令："
+    echo "  sudo -u www $PY_BIN $APP_DIR/adminauth.py set-password"
+  fi
   rm -f "$HEALTH_FILE"
   exit 0
 fi

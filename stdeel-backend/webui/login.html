@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex,nofollow">
+<title>思谛 STDeel · 管理台登录</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --panel2: #334155;
+    --line: #334155; --text: #e2e8f0; --muted: #94a3b8;
+    --accent: #38bdf8; --bad: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    background: radial-gradient(1200px 600px at 50% -10%, #17233c 0%, var(--bg) 60%);
+    color: var(--text); min-height: 100vh;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .login { width: 100%; max-width: 380px; background: var(--panel); border: 1px solid var(--line);
+           border-radius: 16px; padding: 28px 26px; box-shadow: 0 20px 50px rgba(0,0,0,.35); }
+  .badge { display: inline-block; font-size: 12px; color: var(--accent); border: 1px solid #24536b;
+           background: #10283a; border-radius: 999px; padding: 2px 10px; margin-bottom: 14px; letter-spacing: .5px; }
+  h1 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+  .sub { color: var(--muted); font-size: 13px; line-height: 1.5; margin-bottom: 18px; }
+  .notice { background: #2a1f22; border: 1px solid #6b3436; color: #fca5a5; border-radius: 10px;
+            padding: 12px 14px; font-size: 13px; line-height: 1.55; margin-bottom: 16px; }
+  .notice strong { color: #fecaca; }
+  .notice .cmd { margin-top: 10px; padding: 10px 12px; background: #0f172a; border: 1px solid #334155;
+                 border-radius: 8px; color: #cbd5e1; font-family: ui-monospace, Menlo, Consolas, monospace;
+                 font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+  .field { display: block; margin-bottom: 16px; }
+  .field span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  input[type=password] {
+    width: 100%; padding: 11px 13px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); font-size: 15px; letter-spacing: 1px;
+  }
+  input[type=password]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(56,189,248,.15); }
+  button {
+    width: 100%; padding: 11px 14px; border: none; border-radius: 10px; cursor: pointer;
+    background: var(--accent); color: #062033; font-size: 15px; font-weight: 600;
+  }
+  button:hover { filter: brightness(1.08); }
+  .hint { margin-top: 16px; color: #64748b; font-size: 12px; line-height: 1.6; text-align: center; }
+  body.unconfigured .form, body.unconfigured .hint { display: none; }
+</style>
+</head>
+<body class="%%BODY_CLASS%%">
+<main class="login">
+  <div class="badge">STDeel 管理台</div>
+  <h1>请输入管理密码</h1>
+  <p class="sub">管理台包含用户、解题记录与 API Key，必须登录后才能访问。</p>
+  %%NOTICE%%
+  <form class="form" method="post" action="/webui/login" autocomplete="off">
+    <input type="hidden" name="next" value="%%NEXT%%">
+    <label class="field">
+      <span>管理密码</span>
+      <input type="password" name="password" id="password" autocomplete="current-password" required autofocus>
+    </label>
+    <button type="submit">进入管理台</button>
+  </form>
+  <p class="hint">登录状态保持 12 小时；忘记密码可在服务器重新执行 adminauth.py set-password。</p>
+</main>
+</body>
+</html>

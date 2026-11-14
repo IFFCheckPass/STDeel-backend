@@ -42,6 +42,19 @@ MATCH_THRESHOLD = float(_env("STDEEL_MATCH_THRESHOLD", "0.85"))
 # 参与相似度计算的候选上限，避免大题库时接口变慢。
 MATCH_MAX_CANDIDATES = int(_env("STDEEL_MATCH_MAX_CANDIDATES", "200"))
 
+# ---- 管理台鉴权 ----------------------------------------------------------
+# 管理密码只以「加盐 PBKDF2-SHA256」哈希保存，不落明文。默认文件在项目目录下，
+# 已 gitignore 且部署脚本会保留（chmod 600），也可用环境变量指到别处。
+# 未配置时 /webui、/docs、/redoc 与管理端 JSON 接口一律拒绝访问（fail-closed）。
+ADMIN_AUTH_FILE = Path(_env("STDEEL_ADMIN_AUTH_FILE", str(BASE_DIR / "admin_auth.json")))
+# 会话 Cookie：改密码即失效，无需手动踢人
+ADMIN_COOKIE_NAME = _env("STDEEL_ADMIN_COOKIE", "stdeel_admin")
+ADMIN_SESSION_TTL_HOURS = float(_env("STDEEL_ADMIN_SESSION_TTL", "12"))
+ADMIN_SESSION_TTL_SECONDS = int(ADMIN_SESSION_TTL_HOURS * 3600)
+# 登录失败限流：窗口内失败 N 次即锁定（秒）。单进程内存计数，重启清零。
+ADMIN_LOGIN_MAX_FAILURES = int(_env("STDEEL_ADMIN_LOGIN_MAX_FAILURES", "5"))
+ADMIN_LOGIN_LOCK_SECONDS = int(_env("STDEEL_ADMIN_LOGIN_LOCK", "900"))
+
 # ---- Web ----------------------------------------------------------------
 # 客户端不带自定义 Header，故默认放开 CORS；生产环境可改成具体来源。
 CORS_ORIGINS = [o.strip() for o in _env("STDEEL_CORS_ORIGINS", "*").split(",") if o.strip()]
