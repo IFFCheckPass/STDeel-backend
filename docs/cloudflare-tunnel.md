@@ -32,7 +32,7 @@
 
 | 项 | 值 |
 |---|---|
-| 公网地址 | `https://stdeel.snserver.dpdns.org`（Cloudflare 代理，HTTP/2 200） |
+| 公网地址 | `https://stdeel.snserver.dpdns.org`（STDeel 后端 8500）、`https://dsh.snserver.dpdns.org`（DSH 外网网关 5490，2026-11-14 接入；见 §0.4） |
 | Cloudflare zone | `snserver.dpdns.org`（NS = archer/wanda.ns.cloudflare.com） |
 | 隧道 | 名称 `stdeel`，ID `54baabb0-54ed-44cd-bab2-57205fc1a71e`（凭据 `/root/.cloudflared/<ID>.json`，root 600） |
 | DNS | `stdeel.snserver.dpdns.org` → CNAME `<TUNNEL_ID>.cfargotunnel.com`（橙云代理） |
@@ -45,6 +45,30 @@
 
 > **旧隧道已清理（2026-11-14）**：2026-11-13 创建、从未连接过的隧道 `STDeel`（`78167f8f-…`）已删除；
 > 删除前后公网 `/healthz` 均 200，生产无影响。`cloudflared tunnel list` 现在只剩 `stdeel`。
+
+### 0.4 第二个 hostname：DSH 外网网关（2026-11-14 接入）
+
+除了 STDeel 后端，同一条隧道还暴露了 DSH 的外网入口：
+
+| 项 | 值 |
+|---|---|
+| 公网地址 | `https://dsh.snserver.dpdns.org` |
+| 源站 | `127.0.0.1:5490`（`dsh-ext-gate.service`：密码门 + 反代 DSH Web 5470；源码 `/home/sn/bin/dsh-ext-gate.js`） |
+| 源站形态 | 只监听 127.0.0.1；**5470（DSH 本尊）与 5480（内网入口）都不在 ingress 里** |
+
+ingress 现状（`/etc/cloudflared/config.yml`）：
+
+```yaml
+ingress:
+  - hostname: stdeel.snserver.dpdns.org
+    service: http://127.0.0.1:8500
+  - hostname: dsh.snserver.dpdns.org
+    service: http://127.0.0.1:5490
+  - service: http_status:404
+```
+
+自检：`/` → 200 登录页；`/__gate/health` → 200；无会话 POST `/api/*` → 401；WS 升级无会话 → 401；
+`stdeel.snserver.dpdns.org/healthz` → 200 不受影响。
 
 ### 0.2 证书获取踩坑（重要）
 
