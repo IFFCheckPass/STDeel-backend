@@ -38,12 +38,13 @@
 | DNS | `stdeel.snserver.dpdns.org` → CNAME `<TUNNEL_ID>.cfargotunnel.com`（橙云代理） |
 | 配置 | `/etc/cloudflared/config.yml`（由 `scripts/cloudflare/config.yml.example` 生成，`ingress validate` OK） |
 | 服务 | `systemctl status cloudflared` → active (running) / enabled；ExecStart：`cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run` |
-| 协议 | QUIC（出站 UDP 7844），4 条连接分布 lax08/lax10/lax13 |
+| 版本 | 2026.11.0（2026-11-14 从 2026.8.2 升级；已加官方 apt 源，见 §0.3） |
+| 协议 | QUIC（出站 UDP 7844），4 条连接分布 lax08/lax09/lax10/lax13 |
 | 本机指标 | `curl -s http://127.0.0.1:20241/ready` → `readyConnections` |
 | 线上验证 | `/healthz` 200 + `version=2.0.0`；`/webui` 303 → `/webui/login`；`/openapi.json`、`/users` 401；客户端 API 200/404（未被拦） |
 
-> **遗留**：Cloudflare 账号里还有一条 2026-11-13 创建、从未连过的隧道 `STDeel`（`78167f8f-dc30-4425-b3d7-f9582aabc9e7`）。
-> 本次已用 `route dns --overwrite-dns` 把 DNS 指到新隧道；确认没有别的服务依赖后，可在 Zero Trust → Networks → Tunnels 里删掉。
+> **旧隧道已清理（2026-11-14）**：2026-11-13 创建、从未连接过的隧道 `STDeel`（`78167f8f-…`）已删除；
+> 删除前后公网 `/healthz` 均 200，生产无影响。`cloudflared tunnel list` 现在只剩 `stdeel`。
 
 ### 0.2 证书获取踩坑（重要）
 
@@ -67,6 +68,17 @@ sudo cloudflared tunnel info stdeel         # 连接列表
 sudo systemctl restart cloudflared          # 改完 /etc/cloudflared/config.yml 后重启生效
 sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate   # 改配置先校验
 ```
+
+**升级**（2026-11-14 已配好官方 apt 源，之后走 apt 即可，配置里 `no-autoupdate: true` 关掉了自更新）：
+
+```bash
+sudo apt update && sudo apt install --only-upgrade cloudflared
+sudo systemctl restart cloudflared        # 二进制换了要重启进程；区间内公网会短暂 502
+cloudflared --version                     # 期望 2026.11.0+
+```
+
+apt 源：`/etc/apt/sources.list.d/cloudflared.list`（`deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main`）。
+本次升级实测：2026.8.2 → 2026.11.0，restart 后 3–4 条 QUIC 连接重新注册，公网接口全部正常。
 
 ## 1. 拓扑与各组件位置
 
@@ -439,7 +451,7 @@ sudo rm -f /root/.cloudflared/<TUNNEL_ID>.json
 目的：验证 cloudflared 能否建立到 Cloudflare 边缘的隧道（QUIC 与 HTTP/2 两条路），以及公网访问是否真的能通。
 **测试只用了临时 `127.0.0.1:18080` 的 python http.server，绝不把 8500 暴露到公网；验证后进程与临时地址立即清理。**
 
-环境：cloudflared 2026.8.2、Python 3.11.2、出口为家庭宽带直连（无代理环境变量）。
+环境：cloudflared 2026.8.2（2026-11-14 已升 2026.11.0）、Python 3.11.2、出口为家庭宽带直连（无代理环境变量）。
 方法：quick tunnel（`cloudflared tunnel --url ...`，Cloudflare 分配 `*.trycloudflare.com` 临时域名，无需登录，最适合做连通性验证）。
 
 ### A.1 QUIC（默认，出站 UDP 7844）
@@ -495,4 +507,5 @@ cloudflared tunnel --url http://127.0.0.1:18080 --protocol quic --no-autoupdate 
 3. ✅ 已定（2026-11-14）：不加 Cloudflare Access，只靠后端管理密码；接受客户端 API 公开的弱模型（见 §2.2，尤其 `/users/api-key` 可枚举回传 AI Key）。
 4. ✅ 已定（2026-11-14）：8500 暂保持 `0.0.0.0`（不影响隧道；局域网客户端可能依赖，后续再评估收窄）。
 5. ✅ 已定（2026-11-14）：用 `cloudflared service install --no-update-service`，版本升级交给 apt，不自动重启。
+6. ✅ 已完成（2026-11-14）：cloudflared 升级到 2026.11.0（官方 apt 源已配置）；旧隧道 `STDeel` 已删除。
 6. 提醒：`admin_auth.json`（0600、`www:www`、已 gitignore、`deploy.sh` 保留）**不要读/贴/提交，也不要写进任何备份文档示例**。
