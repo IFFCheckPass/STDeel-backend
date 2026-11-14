@@ -62,8 +62,8 @@ ADMIN_LOGIN_LOCK_SECONDS = int(_env("STDEEL_ADMIN_LOGIN_LOCK", "900"))
 API_KEY_SECRET_FILE = Path(_env("STDEEL_API_KEY_SECRET_FILE", str(BASE_DIR / "api_key.key")))
 
 # ---- 请求体 / 限流 / API Key 同步开关（2026-11-14 安全加固） ---------------
-# 请求体上限：普通接口 2MB；上传接口 = 单文件上限 + 1MB multipart 余量。
-MAX_BODY_BYTES = int(_env("STDEEL_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
+# 请求体上限：普通接口 8MB（给批量同步留余量）；上传接口 = 单文件上限 + 1MB multipart 余量。
+MAX_BODY_BYTES = int(_env("STDEEL_MAX_BODY_BYTES", str(8 * 1024 * 1024)))
 MAX_BODY_BYTES_UPLOAD = int(_env("STDEEL_MAX_BODY_BYTES_UPLOAD", str(MAX_UPLOAD_BYTES + 1024 * 1024)))
 # 按来源 IP 的滑动窗口限流（单 worker 内存计数；0/负数视为关闭）。
 RATE_LIMIT_ENABLED = _env("STDEEL_RATE_LIMIT", "1") != "0"
