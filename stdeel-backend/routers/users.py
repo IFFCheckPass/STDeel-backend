@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import cryptostore
+from config import API_KEY_SYNC_ENABLED
 from database import get_db
 from models import DeletedRecord, KnowledgeMastery, SolveRecord, User
 from schemas import (
@@ -182,6 +183,8 @@ async def register(body: UserRegister | None = None, db: AsyncSession = Depends(
 
 @router.put("/api-key", summary="全量覆盖保存该用户的 AI API Key")
 async def put_api_keys(body: ApiKeyPayload | None = None, db: AsyncSession = Depends(get_db)):
+    if not API_KEY_SYNC_ENABLED:
+        raise HTTPException(status_code=403, detail="API Key 同步已在服务端关闭")
     payload = body.model_dump() if body is not None else {}
     user = await _require_user(db, payload.get("user_id"), touch=True)
     items = _normalize_api_keys(payload.get("api_keys"))
@@ -194,6 +197,8 @@ async def put_api_keys(body: ApiKeyPayload | None = None, db: AsyncSession = Dep
 
 @router.get("/api-key", response_model=list[ApiKeyOut], summary="拉取该用户的 AI API Key（换机同步用，返回解密后的完整值）")
 async def get_api_keys(user_id: str = Query(..., description="用户 id，支持 u_1 或 1"), db: AsyncSession = Depends(get_db)):
+    if not API_KEY_SYNC_ENABLED:
+        raise HTTPException(status_code=403, detail="API Key 同步已在服务端关闭")
     user = await _require_user(db, user_id)
     public_id = encode_user_id(user.id)
     result: list[ApiKeyOut] = []

@@ -61,6 +61,17 @@ ADMIN_LOGIN_LOCK_SECONDS = int(_env("STDEEL_ADMIN_LOGIN_LOCK", "900"))
 # 注意：丢失主密钥 = 已保存的用户 API Key 无法解密，必须与数据库一起备份。
 API_KEY_SECRET_FILE = Path(_env("STDEEL_API_KEY_SECRET_FILE", str(BASE_DIR / "api_key.key")))
 
+# ---- 请求体 / 限流 / API Key 同步开关（2026-11-14 安全加固） ---------------
+# 请求体上限：普通接口 2MB；上传接口 = 单文件上限 + 1MB multipart 余量。
+MAX_BODY_BYTES = int(_env("STDEEL_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
+MAX_BODY_BYTES_UPLOAD = int(_env("STDEEL_MAX_BODY_BYTES_UPLOAD", str(MAX_UPLOAD_BYTES + 1024 * 1024)))
+# 按来源 IP 的滑动窗口限流（单 worker 内存计数；0/负数视为关闭）。
+RATE_LIMIT_ENABLED = _env("STDEEL_RATE_LIMIT", "1") != "0"
+RATE_LIMIT_PER_MINUTE = int(_env("STDEEL_RATE_LIMIT_PER_MIN", "240"))
+RATE_LIMIT_API_KEY_PER_MINUTE = int(_env("STDEEL_RATE_LIMIT_API_KEY_PER_MIN", "30"))
+# 换机同步 API Key 的总开关：设 0 可临时关闭（客户端将收到 403），用于 App 升级窗口期。
+API_KEY_SYNC_ENABLED = _env("STDEEL_API_KEY_SYNC", "1") != "0"
+
 # ---- Web ----------------------------------------------------------------
 # 客户端不带自定义 Header，故默认放开 CORS；生产环境可改成具体来源。
 CORS_ORIGINS = [o.strip() for o in _env("STDEEL_CORS_ORIGINS", "*").split(",") if o.strip()]

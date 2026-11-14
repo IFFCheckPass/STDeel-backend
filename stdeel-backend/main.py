@@ -12,7 +12,7 @@ from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 import adminauth
@@ -25,11 +25,25 @@ from config import (
     CORS_ORIGINS,
     DATABASE_PATH,
     LOG_LEVEL,
+    MAX_BODY_BYTES,
+    MAX_BODY_BYTES_UPLOAD,
+    RATE_LIMIT_API_KEY_PER_MINUTE,
+    RATE_LIMIT_ENABLED,
+    RATE_LIMIT_PER_MINUTE,
     UPLOAD_DIR,
 )
 import migrations
 from database import Base, async_session, engine
-from middleware import AccessLogMiddleware, AdminAuthMiddleware, PathPrefixMiddleware
+from middleware import (
+    AccessLogMiddleware,
+    AdminAuthMiddleware,
+    BodyLimitMiddleware,
+    HttpsRedirectMiddleware,
+    PathPrefixMiddleware,
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+    scope_client_ip,
+)
 from routers import answer_library, files, knowledge, solve_records, users
 from services import recompute_all_mastery
 
@@ -89,10 +103,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 中间件注册顺序：后注册的在外层（CORS -> 路径前缀 -> 管理台鉴权 -> 访问日志 -> 路由）
+# 中间件注册顺序：后注册的在外层
+# CORS -> 安全头 -> HTTPS 跳转 -> 路径前缀 -> 限流 -> 请求体上限 -> 管理台鉴权 -> 访问日志 -> 路由
 app.add_middleware(AccessLogMiddleware, logger=logger)
 app.add_middleware(AdminAuthMiddleware)
+app.add_middleware(
+    BodyLimitMiddleware,
+    default_limit=MAX_BODY_BYTES,
+    upload_limit=MAX_BODY_BYTES_UPLOAD,
+)
+app.add_middleware(
+    RateLimitMiddleware,
+    per_minute=RATE_LIMIT_PER_MINUTE,
+    api_key_per_minute=RATE_LIMIT_API_KEY_PER_MINUTE,
+    enabled=RATE_LIMIT_ENABLED,
+)
 app.add_middleware(PathPrefixMiddleware)
+app.add_middleware(HttpsRedirectMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -150,13 +178,13 @@ async def index():
 # 管理台登录（页面本身公开，不含任何业务数据）
 # --------------------------------------------------------------------------
 def _client_ip(request: Request) -> str:
-    """真实来源 IP：Cloudflare Tunnel 场景下看 CF-Connecting-IP，其次 X-Forwarded-For。"""
-    forwarded = request.headers.get("x-forwarded-for", "")
-    return (
-        request.headers.get("cf-connecting-ip")
-        or (forwarded.split(",")[0].strip() if forwarded else "")
-        or (request.client.host if request.client else "")
-    ).strip()
+    """真实来源 IP。
+
+    2026-11-14 加固：只有直连来自本机回环（Cloudflare Tunnel / 本机反代）时才信任
+    CF-Connecting-IP / X-Forwarded-For；局域网直连源站时用 socket 地址，
+    避免伪造头部绕过管理台登录限流。实现见 middleware.scope_client_ip()。
+    """
+    return scope_client_ip(request.scope)
 
 
 def _is_https(request: Request) -> bool:
@@ -350,3 +378,14 @@ async def webui():
     """管理台：用户 / API Key / 知识点掌握 / 解题记录。"""
     html = WEBUI_INDEX.read_text(encoding="utf-8") if WEBUI_INDEX.is_file() else "<h1>webui not found</h1>"
     return HTMLResponse(html)
+
+
+WEBUI_APP_JS = BASE_DIR / "webui" / "app.js"
+
+
+@app.get("/webui/app.js", include_in_schema=False)
+async def webui_app_js():
+    """管理台脚本（外置以便启用严格 CSP：script-src 'self'）。"""
+    if not WEBUI_APP_JS.is_file():
+        return JSONResponse(status_code=404, content={"detail": "app.js 缺失"})
+    return FileResponse(WEBUI_APP_JS, media_type="application/javascript")
