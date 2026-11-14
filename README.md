@@ -65,19 +65,27 @@ python3 scripts/acceptance_test.py --base-url http://127.0.0.1:8599/api/v1   # �
 （`GET /users`、`GET /users/stats`、`GET /users/{id}`、`GET /users/{id}/records`、
 `GET /users/{id}/mastery`、`DELETE /users/{id}`）都需要先输管理密码。
 
-**密码怎么设**：只存加盐 PBKDF2-SHA256 哈希，明文不落盘、不进日志、不进命令行参数。
-在服务器上用服务账号（`www`）执行，按提示输入两次：
+**首次设置密码（二选一）**
+
+1. **浏览器（推荐）**：在内网打开 `http://<这台机器IP>:8500/webui`，页面会显示
+   「首次使用：设置管理密码」，输两次即可，设置完直接进入管理台。
+   首启设置只允许**本机/内网直连**：经 Cloudflare Tunnel 进来的公网请求会被拒绝，
+   防止服务一暴露就被人抢注密码。
+2. **服务器命令行**（也用于**重置**密码）：用服务账号 `www` 执行，按提示输入两次：
 
 ```bash
 sudo -u www /www/server/pyporject_evn/3.11.2venv/bin/python \
     /www/wwwroot/stdeel-backend/stdeel-backend/adminauth.py set-password
 ```
 
+- 密码只存**加盐 PBKDF2-SHA256 哈希**，明文不落盘、不进日志、不进命令行参数。
 - 文件是 `admin_auth.json`（0600，已在 `.gitignore`，部署脚本会保留并收回权限）。
 - 写完立即生效（按文件 mtime 自动重载），**不用重启服务**；旧会话全部失效。
-- 改密码 = 直接再跑一次 `set-password`；查看状态用 `adminauth.py status`。
-- **未配置密码时管理台一律拒绝访问**（fail-closed），登录页会显示设置命令。
+- 查看状态用 `adminauth.py status`（只显示已配置/未配置，不显示密码）。
+- **未配置密码时管理台一律拒绝访问**（fail-closed）：`/webui` 跳登录页并提示设置，
+  管理端接口与 `/openapi.json` 返回 503。
 - 登录失败 5 次锁 15 分钟（按来源 IP，Cloudflare Tunnel 下取 `CF-Connecting-IP`）。
+- 会话默认 12 小时，Cookie 为 `HttpOnly + SameSite=Lax`，HTTPS 访问时带 `Secure`。
 - 客户端同步接口（注册、解题记录、答案库、知识点、`/users/api-key`）**不受影响**。
 
 ## 部署（宝塔 Python 项目）

@@ -4,6 +4,7 @@
 启动顺序：建表 -> 幂等迁移 -> （升级时）重算知识点掌握 -> 对外服务。
 """
 
+import ipaddress
 import logging
 from contextlib import asynccontextmanager
 from html import escape as html_escape
@@ -113,6 +114,8 @@ _LOGIN_NOTICES = {
     "1": "密码不正确",
     "locked": "尝试次数过多，已暂时锁定，请稍后再试",
     "denied": "来源校验失败，请直接从管理台登录",
+    "setup_invalid": "两次输入不一致，或密码长度不足 8 位",
+    "setup_lan": "首次设置密码只允许在本机或内网直连时进行；也可在服务器执行 adminauth.py set-password",
 }
 
 
@@ -149,6 +152,22 @@ def _is_https(request: Request) -> bool:
     return request.url.scheme == "https"
 
 
+def _is_local_client(request: Request) -> bool:
+    """判断是否「本机/内网直连」。
+
+    首次设置管理密码只允许内网直连：公网（Cloudflare Tunnel）来源会被
+    CF-Connecting-IP / cdn-loop 或非私有 IP 识别出来并被拒绝，避免被人抢注密码。
+    """
+    if request.headers.get("cf-connecting-ip") or request.headers.get("cdn-loop"):
+        return False
+    host = request.client.host if request.client else ""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local
+
+
 def _safe_next(raw: str) -> str:
     """只允许站内相对路径，避免开放重定向。"""
     text = (raw or "").strip()
@@ -157,18 +176,27 @@ def _safe_next(raw: str) -> str:
     return text
 
 
-def _login_page_html(next_path: str, error: str) -> str:
+def _login_page_html(request: Request, next_path: str, error: str) -> str:
     configured = adminauth.is_configured()
-    if not configured:
-        notice = (
+    notices: list[str] = []
+    if configured:
+        body_class = ""
+    elif _is_local_client(request):
+        # 首启：允许在内网直连时自己设密码（公网来源会被 _is_local_client 挡掉）
+        body_class = "setup"
+        notices.append(
+            '<div class="notice"><strong>首次使用：设置管理密码</strong><br>'
+            "设置后每次进入管理台都要输入它；服务器只保存加盐哈希，不保存明文。</div>"
+        )
+    else:
+        body_class = "locked"
+        notices.append(
             '<div class="notice"><strong>尚未配置管理密码</strong><br>'
-            "管理台已拒绝访问。请在服务器执行下面的命令设置密码（输入不回显），然后刷新本页："
+            "管理台已拒绝公网访问。请在服务器执行下面的命令设置密码（输入不回显）："
             '<pre class="cmd">' + html_escape(SETUP_COMMAND) + "</pre></div>"
         )
-    elif error in _LOGIN_NOTICES:
-        notice = '<div class="notice">' + html_escape(_LOGIN_NOTICES[error]) + "</div>"
-    else:
-        notice = ""
+    if error in _LOGIN_NOTICES:
+        notices.append('<div class="notice">' + html_escape(_LOGIN_NOTICES[error]) + "</div>")
 
     template = (
         LOGIN_INDEX.read_text(encoding="utf-8")
@@ -176,8 +204,8 @@ def _login_page_html(next_path: str, error: str) -> str:
         else '<!DOCTYPE html><meta charset="utf-8"><body><h1>管理台登录页缺失</h1></body>'
     )
     return (
-        template.replace("%%BODY_CLASS%%", "" if configured else "unconfigured")
-        .replace("%%NOTICE%%", notice)
+        template.replace("%%BODY_CLASS%%", body_class)
+        .replace("%%NOTICE%%", "".join(notices))
         .replace("%%NEXT%%", html_escape(next_path, quote=True))
     )
 
@@ -188,7 +216,7 @@ async def webui_login_page(request: Request, error: str = "", next: str = "/webu
     if adminauth.token_valid(request.cookies.get(ADMIN_COOKIE_NAME)):
         return RedirectResponse(url=next_path, status_code=303)
     return HTMLResponse(
-        _login_page_html(next_path, error),
+        _login_page_html(request, next_path, error),
         headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer"},
     )
 
@@ -238,6 +266,49 @@ async def webui_login_submit(request: Request):
         samesite="lax",
         secure=_is_https(request),
     )
+    return response
+
+
+@app.post("/webui/setup", include_in_schema=False)
+async def webui_setup_submit(request: Request):
+    """首启设置管理密码：只允许本机/内网直连，公网来源一律拒绝（防抢注）。"""
+    if adminauth.is_configured():
+        return RedirectResponse(url="/webui/login", status_code=303)
+
+    # 与登录相同的 CSRF 兜底
+    origin = request.headers.get("origin", "")
+    if origin:
+        origin_netloc = urlsplit(origin).netloc
+        if origin_netloc and origin_netloc != request.headers.get("host", ""):
+            return RedirectResponse(url="/webui/login?error=denied", status_code=303)
+
+    if not _is_local_client(request):
+        logger.warning("拒绝公网来源的首启设置密码请求: ip=%s", _client_ip(request))
+        return RedirectResponse(url="/webui/login?error=setup_lan", status_code=303)
+
+    form = await request.form()
+    next_path = _safe_next(str(form.get("next") or "/webui"))
+    password = str(form.get("password") or "")
+    confirm = str(form.get("confirm") or "")
+    if password != confirm or len(password) < 8:
+        return RedirectResponse(
+            url="/webui/login?error=setup_invalid&next=" + quote(next_path, safe="/"), status_code=303
+        )
+
+    adminauth.write_password(password)
+    logger.info("管理台密码已首次设置: ip=%s", _client_ip(request))
+    response = RedirectResponse(url=next_path, status_code=303)
+    token = adminauth.create_token()
+    if token:
+        response.set_cookie(
+            key=ADMIN_COOKIE_NAME,
+            value=token,
+            max_age=ADMIN_SESSION_TTL_SECONDS,
+            path="/",
+            httponly=True,
+            samesite="lax",
+            secure=_is_https(request),
+        )
     return response
 
 

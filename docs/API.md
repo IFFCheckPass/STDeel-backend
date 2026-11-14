@@ -302,8 +302,24 @@ upsert 顺序：`(user_id, client_ref)` 命中 → `updated`；否则 `(user_id,
 | 客户端接口 | 其余全部（注册、解题记录、答案库、知识点、`GET/PUT /users/api-key`、`/files/upload`、`/healthz`） | 正常放行 |
 
 > 未配置管理密码时，上面这些受保护路径一律拒绝（页面仍跳登录页并提示如何设置，接口返回 `503`）。
+> 首次设置密码可在内网浏览器打开 `/webui` 操作（只允许本机/内网直连，公网来源被拒），
+> 也可以在服务器执行 `adminauth.py set-password`。
 
-### 10.2 登录 / 登出
+### 10.2 首启设置密码
+
+```http
+POST /webui/setup
+Content-Type: application/x-www-form-urlencoded
+
+password=<新密码，至少 8 位>&confirm=<再输一次>&next=/webui
+```
+
+- 仅在**尚未配置密码**时可用；已配置时只回 `303 /webui/login`。
+- 仅允许**本机/内网直连**来源：带 `CF-Connecting-IP` / `cdn-loop` 头或来源 IP 非私有地址
+  一律拒绝（`error=setup_lan`），防止公网抢注。
+- 成功即写入加盐哈希并自动登录，跳回 `next`。
+
+### 10.3 登录 / 登出
 
 ```http
 POST /webui/login
@@ -318,7 +334,7 @@ password=<管理密码>&next=/webui
 - 登出：`POST /webui/logout`，清 Cookie 后回登录页。
 - 会话默认 12 小时；**改密码会让所有旧会话立即失效**。
 
-### 10.3 运维命令
+### 10.4 运维命令
 
 ```bash
 # 设置/重置密码（输入不回显，只保存加盐哈希）

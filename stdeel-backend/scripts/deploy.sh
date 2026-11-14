@@ -166,8 +166,9 @@ if [ "$OK" -eq 1 ]; then
   if [ -f "$APP_DIR/admin_auth.json" ]; then
     echo "管理台密码：已配置（登录 /webui 会要求输密码）"
   else
-    echo "管理台密码：尚未配置（现在 /webui 与 /docs 会拒绝访问）。设置命令："
-    echo "  sudo -u www $PY_BIN $APP_DIR/adminauth.py set-password"
+    echo "管理台密码：尚未配置（现在 /webui 与 /docs 会拒绝访问）"
+    echo "  · 内网浏览器打开 http://<本机IP>:$PORT/webui 按提示设置（推荐）"
+    echo "  · 或服务器执行：sudo -u www $PY_BIN $APP_DIR/adminauth.py set-password"
   fi
   rm -f "$HEALTH_FILE"
   exit 0

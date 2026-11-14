@@ -130,8 +130,8 @@ ADMIN_API_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("GET", re.compile(r"^/users/[^/]+$")),
     ("DELETE", re.compile(r"^/users/[^/]+$")),
 )
-# 无条件放行的路径：登录页、登出（登出本来就要能在会话失效时清 Cookie）
-PUBLIC_OPEN_EXACT = frozenset({ADMIN_LOGIN_PATH, "/webui/logout"})
+# 无条件放行的路径：登录页、首启设置密码、登出（登出本来就要能在会话失效时清 Cookie）
+PUBLIC_OPEN_EXACT = frozenset({ADMIN_LOGIN_PATH, "/webui/setup", "/webui/logout"})
 # 客户端要用的接口：即使长得像管理端也放行（换机同步要读自己的 API Key）
 CLIENT_OPEN_EXACT = frozenset({"/users/api-key", "/users/register"})
 
