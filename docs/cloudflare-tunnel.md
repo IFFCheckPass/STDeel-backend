@@ -24,7 +24,7 @@
 | 暴露面 | 只暴露 1 个子域名 → 127.0.0.1:8500；5480（宝塔）、5470（DSH）、80/443（nginx）都不进 ingress |
 | 管理面鉴权 | ✅ 2026-11-14 已上线「管理台密码登录」：`/webui`、`/docs`、`/redoc` 未登录 303 跳登录页，`/openapi.json` 与管理端 JSON 接口未登录 401；未配置密码时 fail-closed。见 §2.1 |
 | 客户端 API 鉴权 | ❌ 仍无（注册、解题记录、答案库、知识点、`/users/api-key` 都靠 `user_id`，契约如此）→ 拿到域名的人可读写同步数据，风险见 §2.2 |
-| 阻塞项 | ① 用户域名/zone；② 用户已决定**不用 Cloudflare Access**，只靠后端密码；③ 8500 是否收窄监听（暂不动，局域网客户端可能依赖） |
+| 阻塞项 | ① **用户域名/zone（唯一硬阻塞）**；② 上线前必须先配好管理台密码（本文写作时本机 `/openapi.json` 仍返回 503，说明尚未配置）；③ 已定：不用 Access，只靠后端密码；④ 已定：8500 暂保持 `0.0.0.0` |
 
 ## 1. 拓扑与各组件位置
 
@@ -45,6 +45,7 @@ cloudflared（本机 systemd 服务） ── HTTP ──► 127.0.0.1:8500 uvic
 | 隧道凭据 | `/root/.cloudflared/<TUNNEL_ID>.json` | `tunnel create` 生成；权限 600；**不要提交进版本库** |
 | 隧道配置 | `/etc/cloudflared/config.yml` | 由模板 `scripts/cloudflare/config.yml.example` 生成 |
 | systemd 单元 | `/etc/systemd/system/cloudflared.service` | 由 `cloudflared service install` 生成，或用手写模板 |
+| 管理台认证配置 | 应用目录 `admin_auth.json`（线上 `/www/wwwroot/stdeel-backend/stdeel-backend/admin_auth.json`，0600、`www:www`） | 密码哈希 + 会话签名密钥；已 gitignore，`deploy.sh` 会保留并修正权限；**不要读/贴/提交，也不要写进备份文档示例** |
 | 日志 | journald：`journalctl -u cloudflared` | 手写单元也可另加 `--logfile` |
 
 ## 2. 安全前提（做之前必读）
@@ -57,9 +58,13 @@ cloudflared（本机 systemd 服务） ── HTTP ──► 127.0.0.1:8500 uvic
 - `/openapi.json`、`GET /users`、`GET /users/stats`、`GET /users/{id}`、
   `GET /users/{id}/records`、`GET /users/{id}/mastery`、`DELETE /users/{id}`：未登录 401 JSON；
 - 未配置密码时 fail-closed（页面仍跳登录页并提示设置，接口 503）；
-- 密码只存加盐 PBKDF2-SHA256 哈希（`admin_auth.json`，0600）；登录失败 5 次锁 15 分钟。
+- 密码只存加盐 PBKDF2-SHA256 哈希（`admin_auth.json`，权限 0600、属主 `www:www`）；登录失败 5 次锁 15 分钟。
+- `admin_auth.json` 位于应用目录（线上 `/www/wwwroot/stdeel-backend/stdeel-backend/admin_auth.json`），
+  已被 `stdeel-backend/.gitignore` 忽略，`deploy.sh` 会保留它并把权限修正为 `www:www 0600`。
+  文件 mtime 变化会自动重载——**改密码后旧会话立即失效，且无需重启服务**。
+  它只含哈希与会话签名密钥：**不要读、不要打印、不要提交、不要写进任何备份/文档示例**。
 
-**首次设置密码**（隧道开通前先做掉，公网来源不能设密码，见 §2.2 的出处说明）：
+**首次设置密码**（隧道开通前先做掉；公网来源无法设置，原因见下方说明）：
 
 - 内网浏览器打开 `http://192.168.2.60:8500/webui` → 页面显示「首次使用：设置管理密码」→ 输两次；
 - 或服务器 CLI：`sudo -u www /www/server/pyporject_evn/3.11.2venv/bin/python /www/wwwroot/stdeel-backend/stdeel-backend/adminauth.py set-password`。
@@ -75,6 +80,9 @@ cloudflared（本机 systemd 服务） ── HTTP ──► 127.0.0.1:8500 uvic
 - 「后端密码」只保护**管理台/文档/管理端接口**，保护不了 `/users/register`、`/users/api-key`、
   `/solve-records*`、`/answer-library*`、`/knowledge*`、`/files*`、`/uploads*` 这些客户端路径。
 - 任何拿到子域名的人都能注册账号、按 `user_id` 读/写同步数据（`user_id` 是 `u_1` 这种可枚举值）。
+- **最敏感的一处**：`GET /users/api-key?user_id=u_N` 会回传该用户已保存的 AI Provider Key，而 `user_id` 可枚举
+  （`u_1`、`u_2`…）——等于「拿到域名就能批量拉 AI Key」。用户已知悉并接受该弱模型；
+  若要收敛，**优先给这个接口加客户端令牌**，再考虑整域名套 Access。
 - 缓解手段（按性价比）：
   1. **域名不公开传播**（域名即弱凭据）；不写进公开文档/截图/群聊。
   2. Cloudflare 侧对客户端路径加 **Rate limiting**（Zero Trust/WAF 规则），至少挡批量枚举。
@@ -101,8 +109,12 @@ dig +short NS <你的域名>
 # 4) 确认端口现状：8500 是后端，80/443 是宝塔 nginx，别混用
 ss -lntp | grep -E ':(80|443|8500|5480|5470)\s'
 
-# 5) 确认 Cloudflare 账号已开通 Zero Trust（用户已完成注册）
-#    浏览器打开 https://one.dash.cloudflare.com → Zero Trust 能进就行
+# 5) Cloudflare 账号：能登录 dash.cloudflare.com 即可（命名隧道不依赖 Zero Trust 套餐；
+#    用户已决定不用 Access，one.dash.cloudflare.com 只是可选）
+
+# 6) 管理台密码必须在开隧道前配好，否则管理面接口 fail-closed
+curl -s -o /dev/null -w '/openapi.json -> %{http_code}\n' http://127.0.0.1:8500/openapi.json
+# 期望 401（已配置）；503 = 还没设密码 → 先按 §2.1 设好再继续
 ```
 
 > `cloudflared tunnel login` 依赖浏览器。本机无桌面浏览器时，把命令打印出的 URL 复制到**任意设备**的浏览器打开授权即可。
@@ -264,11 +276,17 @@ curl -I https://<DOMAIN>/healthz
 sudo cloudflared tunnel info stdeel
 curl -s http://127.0.0.1:20241/ready && echo
 
-# 4) 确认 Access 是否覆盖管理台（未登录应 302 到 cloudflareaccess.com）
+# 4) 管理面密码保护（当前决定：不用 Access，所以看到的是后端自己跳登录页）
 curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://<DOMAIN>/webui
-# 期望：302 且 redirect_url 指向 https://<team>.cloudflareaccess.com/cdn-cgi/access/login/...
+# 期望：303，redirect_url 是 https://<DOMAIN>/webui/login?next=/webui
+curl -s -o /dev/null -w '%{http_code}\n' https://<DOMAIN>/openapi.json
+# 期望：401（503 = 管理密码还没配置，回 §2.1）
+# 浏览器打开 https://<DOMAIN>/webui 应看到登录页，输密码后能进
 
-# 5) 确认业务 API 没被 Access 拦（应直接 200/4xx，而不是 302 到登录页）
+# 4b) 若将来启用了 Access（§9），/webui 的期望改为 302 到 cloudflareaccess；
+#     过完 Access 还会再要后端密码（双因子，属预期）。
+
+# 5) 客户端 API 必须直达（不能被 Access/密码拦）：应 200/4xx，而不是 302 到登录页
 curl -s -o /dev/null -w '%{http_code}\n' https://<DOMAIN>/healthz
 ```
 
@@ -304,9 +322,9 @@ Zero Trust → Access → Applications → **Add an application → Self-hosted*
 - 建议 Session duration 设 24h，别设「永久」。
 - **不要**给业务 API 路径建应用：`/users*`、`/solve-records*`、`/answer-library*`、`/knowledge*`、
   `/files*`、`/uploads*`、`/healthz` 都不要被 Access 覆盖，否则手机客户端会被 302 到登录页而同步失败。
-- 建完立刻用 §8 第 4、5 条复验：`/webui` 302 到登录页、`/healthz` 200。
+- 建完用 §8 第 4b、5 条复验：`/webui` 302 到 cloudflareaccess；`/healthz` 200。
 
-### 9.3 进阶（可选，等后端有鉴权之后）
+### 9.3 进阶（等以后整域名套 Access / 拆独立管理子域名时）
 
 - 给 API 也套 Access 时，客户端需要带 `CF-Access-Client-Id` / `CF-Access-Client-Secret`（Service Token）；
   当前客户端「不带自定义 Header」，所以现在做不了。
@@ -325,7 +343,10 @@ Zero Trust → Access → Applications → **Add an application → Self-hosted*
 | `tunnel create` 报 `failed to fetch certificate` / 无 cert.pem | 没 login / cert 在别人家目录 | `sudo cloudflared tunnel login`；确认 `/root/.cloudflared/cert.pem` 存在；普通用户跑的话在 `~/.cloudflared/` |
 | `service install` 报找不到 config/credentials | `/etc/cloudflared/config.yml` 缺失或 `credentials-file` 路径错 | 按 §6 重建；`sudo cloudflared tunnel --config ... ingress validate`；确认 JSON 文件存在且 root 可读 |
 | systemd 起不来，`status=1` / 立即退出 | ingress 缺 catch-all、YAML 缩进错、UUID 写错 | `sudo journalctl -u cloudflared -n 30`；`ingress validate`；注意 YAML 用空格不用 Tab |
-| 访问 /webui 一直转圈 / Access 循环重定向 | Access 路径与应用配置不一致、Cookie 问题 | 无痕窗口；确认应用 Path 与请求路径匹配；`curl -sI https://<DOMAIN>/webui` 看 Location 头 |
+| 访问 /webui 显示「尚未配置管理密码」/ 接口 503 | 管理密码没设（fail-closed） | 内网直连 `http://192.168.2.60:8500/webui` 设置，或服务器 CLI（§2.1）；设置后无需重启 |
+| 登录页提示「失败次数过多」 | 5 次失败锁 15 分钟（按真实 IP，隧道下看 CF-Connecting-IP） | 等 15 分钟或换网络；密码忘了用 `adminauth.py set-password` 重置 |
+| 登录后反复跳回登录页 | Cookie 没带住：Secure Cookie/HTTPS 判断、代理层改写 `X-Forwarded-Proto` | 统一用 https 域名访问；不要混用内网 IP 与公网域名；无痕窗口复测 |
+| 部署后管理台登录失效 | `admin_auth.json` 属主/权限被改（应为 `www:www` 0600） | `sudo chown www:www <应用目录>/admin_auth.json && sudo chmod 600 ...`；`deploy.sh` 会自动修正 |
 | 上传图片失败 | 后端限制 10MB（`STDEEL_MAX_UPLOAD_BYTES`）；Cloudflare 免费版请求体上限 100MB | 小于 10MB 即可；大文件分片或调后端上限 |
 | 本机同时开 TUN/全局代理 | 全局代理可能劫持 cloudflared 的 UDP/TCP 出站 | 在代理规则里让 `*.argotunnel.com`、`*.cloudflare.com` 直连，或直接用 `protocol: http2` |
 | 宝塔 nginx 干扰 | 不会：隧道不走 80/443，是 cloudflared 主动出站 | 无需改 nginx；不要在 ingress 里写 80/443 |
@@ -427,7 +448,9 @@ cloudflared tunnel --url http://127.0.0.1:18080 --protocol quic --no-autoupdate 
 
 ## 附录 B：待用户/Lead 确认
 
-1. **域名**：哪个 Cloudflare zone、子域名用什么（例如 `stdeel.<domain>`）——**当前唯一阻塞项**。
-2. ✅ 已定（2026-11-14）：不加 Cloudflare Access，只靠后端管理密码；接受客户端 API 公开的弱模型（见 §2.2）。
-3. ✅ 已定（2026-11-14）：8500 暂保持 `0.0.0.0`（不影响隧道；局域网客户端可能依赖，后续再评估收窄）。
-4. ✅ 已定（2026-11-14）：用 `cloudflared service install --no-update-service`，版本升级交给 apt，不自动重启。
+1. **域名**：哪个 Cloudflare zone、子域名用什么（例如 `stdeel.<domain>`）——**唯一硬阻塞项**。
+2. **管理台密码**：上线前必须先配置（内网浏览器或服务器 CLI，见 §2.1）。截至本文写作时本机 `/openapi.json` 仍返回 503，说明**尚未配置**，需先设好再开隧道。
+3. ✅ 已定（2026-11-14）：不加 Cloudflare Access，只靠后端管理密码；接受客户端 API 公开的弱模型（见 §2.2，尤其 `/users/api-key` 可枚举回传 AI Key）。
+4. ✅ 已定（2026-11-14）：8500 暂保持 `0.0.0.0`（不影响隧道；局域网客户端可能依赖，后续再评估收窄）。
+5. ✅ 已定（2026-11-14）：用 `cloudflared service install --no-update-service`，版本升级交给 apt，不自动重启。
+6. 提醒：`admin_auth.json`（0600、`www:www`、已 gitignore、`deploy.sh` 保留）**不要读/贴/提交，也不要写进任何备份文档示例**。
