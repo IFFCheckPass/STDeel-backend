@@ -216,6 +216,7 @@ ADMIN_API_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("PUT", re.compile(r"^/answer-library/[^/]+$")),
     ("DELETE", re.compile(r"^/answer-library/[^/]+$")),
     ("GET", re.compile(r"^/knowledge/summary$")),
+    ("POST", re.compile(r"^/users/client-token$")),
 )
 # 无条件放行的路径：登录页、首启设置密码、登出（登出本来就要能在会话失效时清 Cookie）
 PUBLIC_OPEN_EXACT = frozenset({ADMIN_LOGIN_PATH, "/webui/setup", "/webui/logout"})

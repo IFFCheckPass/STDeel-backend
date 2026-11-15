@@ -4,11 +4,12 @@ import json
 import logging
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import clientauth
 import cryptostore
 from config import API_KEY_SYNC_ENABLED
 from database import get_db
@@ -67,6 +68,17 @@ async def _require_user(db: AsyncSession, raw_user_id, *, touch: bool = False) -
     if touch:
         user.last_active_at = utcnow()
     return user
+
+
+def _require_client_token(request: Request, user: User) -> None:
+    """敏感客户端接口（换机同步 Key）要求 per-user 令牌，防止 user_id 可枚举读明文。"""
+    if not user.client_token_hash:
+        raise HTTPException(
+            status_code=403,
+            detail="该用户尚未配置客户端令牌：请先在管理台生成令牌，并在 App 中设置后再换机同步",
+        )
+    if not clientauth.verify(user, clientauth.from_request(request)):
+        raise HTTPException(status_code=401, detail="客户端令牌无效或已轮换")
 
 
 def _load_api_keys(user: User) -> list[dict]:
@@ -171,6 +183,14 @@ async def register(body: UserRegister | None = None, db: AsyncSession = Depends(
     user.last_active_at = utcnow()
     await db.flush()
 
+    result = _public_user(user)
+    if created:
+        # 新用户首次注册时下发客户端令牌（明文只返回这一次，库里只存哈希）
+        token = clientauth.issue(user)
+        user.client_token_updated_at = utcnow()
+        await db.flush()
+        result["client_token"] = token
+        logger.info("客户端令牌已签发: user=%s", encode_user_id(user.id))
     logger.info(
         "用户注册/复用: user=%s created=%s device=%s username=%s",
         encode_user_id(user.id),
@@ -178,15 +198,16 @@ async def register(body: UserRegister | None = None, db: AsyncSession = Depends(
         user.device_id,
         user.username,
     )
-    return _public_user(user)
+    return result
 
 
 @router.put("/api-key", summary="全量覆盖保存该用户的 AI API Key")
-async def put_api_keys(body: ApiKeyPayload | None = None, db: AsyncSession = Depends(get_db)):
+async def put_api_keys(request: Request, body: ApiKeyPayload | None = None, db: AsyncSession = Depends(get_db)):
     if not API_KEY_SYNC_ENABLED:
         raise HTTPException(status_code=403, detail="API Key 同步已在服务端关闭")
     payload = body.model_dump() if body is not None else {}
     user = await _require_user(db, payload.get("user_id"), touch=True)
+    _require_client_token(request, user)
     items = _normalize_api_keys(payload.get("api_keys"))
     user.api_keys = json.dumps(items, ensure_ascii=False)
     await db.flush()
@@ -196,10 +217,15 @@ async def put_api_keys(body: ApiKeyPayload | None = None, db: AsyncSession = Dep
 
 
 @router.get("/api-key", response_model=list[ApiKeyOut], summary="拉取该用户的 AI API Key（换机同步用，返回解密后的完整值）")
-async def get_api_keys(user_id: str = Query(..., description="用户 id，支持 u_1 或 1"), db: AsyncSession = Depends(get_db)):
+async def get_api_keys(
+    request: Request,
+    user_id: str = Query(..., description="用户 id，支持 u_1 或 1"),
+    db: AsyncSession = Depends(get_db),
+):
     if not API_KEY_SYNC_ENABLED:
         raise HTTPException(status_code=403, detail="API Key 同步已在服务端关闭")
     user = await _require_user(db, user_id)
+    _require_client_token(request, user)
     public_id = encode_user_id(user.id)
     result: list[ApiKeyOut] = []
     for index, item in enumerate(_load_api_keys(user), start=1):
@@ -246,6 +272,36 @@ async def user_stats(db: AsyncSession = Depends(get_db)):
         )
     ).scalar_one()
     return UserStats(total_users=total, today_new=today_new, active_7d=active_7d, active_30d=active_30d)
+
+
+@router.post("/client-token", summary="管理台：生成/轮换用户的客户端令牌（明文只返回这一次）")
+async def rotate_client_token(
+    user_id: str = Query(..., description="用户 id，支持 u_1 或 1"),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await _require_user(db, user_id)
+    token = clientauth.issue(user)
+    user.client_token_updated_at = utcnow()
+    await db.flush()
+    logger.info("客户端令牌已轮换: user=%s", encode_user_id(user.id))
+    return {
+        "user_id": encode_user_id(user.id),
+        "client_token": token,
+        "updated_at": iso_utc(user.client_token_updated_at),
+    }
+
+
+@router.get("/client-token-status", summary="管理台：查看用户是否已配置客户端令牌")
+async def client_token_status(
+    user_id: str = Query(..., description="用户 id，支持 u_1 或 1"),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await _require_user(db, user_id)
+    return {
+        "user_id": encode_user_id(user.id),
+        "configured": bool(user.client_token_hash),
+        "updated_at": iso_utc(user.client_token_updated_at),
+    }
 
 
 @router.get("/api-key-masked", response_model=list[ApiKeyMaskedOut], summary="管理台：只看得到前 3 / 后 3 位的 API Key（不解密）")

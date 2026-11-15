@@ -32,6 +32,10 @@ SCHEMA_VERSION = "2"
 LAST_ENCRYPTED_API_KEY_USERS = 0
 
 ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "users": [
+        ("client_token_hash", "client_token_hash VARCHAR(64)"),
+        ("client_token_updated_at", "client_token_updated_at DATETIME"),
+    ],
     "solve_records": [
         ("local_id", "local_id INTEGER"),
         ("batch_key", "batch_key VARCHAR(64)"),

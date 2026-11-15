@@ -28,6 +28,9 @@ class User(Base):
     platform = Column(String(32), nullable=False, default="android", server_default="android")
     # 全量覆盖式保存：[{api_key, name, enabled}, ...]
     api_keys = Column(Text, nullable=False, default="[]", server_default="[]")
+    # 客户端（App）令牌：只存 SHA-256 哈希，用于换机同步等敏感接口的 per-user 鉴权
+    client_token_hash = Column(String(64), nullable=True)
+    client_token_updated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=_utcnow, server_default=func.now())
     last_active_at = Column(DateTime, nullable=False, default=_utcnow, server_default=func.now(), onupdate=_utcnow)
 

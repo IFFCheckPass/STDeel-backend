@@ -56,6 +56,78 @@ async function selectUser(userId, el) {
   loadApiKeys(userId);
   loadMastery(userId);
   loadRecords(userId);
+  loadClientTokenStatus(userId);
+}
+
+async function loadClientTokenStatus(userId) {
+  const box = $('#clientTokenBox');
+  box.textContent = '加载中…';
+  try {
+    const res = await api(`/users/client-token-status?user_id=${enc(userId)}`);
+    const data = await res.json();
+    renderClientTokenStatus(box, userId, data);
+  } catch (e) {
+    box.textContent = '加载失败：' + e.message;
+  }
+}
+
+function renderClientTokenStatus(box, userId, data) {
+  box.innerHTML = '';
+  const line = document.createElement('div');
+  const state = document.createElement('span');
+  state.className = 'meta';
+  state.textContent = data.configured
+    ? '已配置（更新于 ' + String(data.updated_at || '').slice(0, 19).replace('T', ' ') + '）'
+    : '未配置：App 调用 /users/api-key 会返回 403，需要先生成令牌';
+  const btn = document.createElement('button');
+  btn.className = 'btn';
+  btn.textContent = data.configured ? '轮换令牌' : '生成令牌';
+  btn.addEventListener('click', () => rotateClientToken(userId));
+  line.appendChild(state);
+  line.appendChild(document.createTextNode(' '));
+  line.appendChild(btn);
+  box.appendChild(line);
+  const hint = document.createElement('div');
+  hint.className = 'meta';
+  hint.style.marginTop = '6px';
+  hint.textContent = 'App 请求 /users/api-key 时需带请求头 X-STDeel-Token（或 ?client_token=）。令牌明文只在生成时显示一次。';
+  box.appendChild(hint);
+}
+
+async function rotateClientToken(userId) {
+  if (!confirm('生成/轮换后旧令牌立即失效，App 需要更新为新令牌。继续？')) return;
+  const box = $('#clientTokenBox');
+  try {
+    const res = await api(`/users/client-token?user_id=${enc(userId)}`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.status);
+    box.innerHTML = '';
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = '新令牌（只显示这一次，请立即复制到 App）：';
+    const pre = document.createElement('pre');
+    pre.className = 'mono';
+    pre.style.whiteSpace = 'pre-wrap';
+    pre.style.wordBreak = 'break-all';
+    pre.style.marginTop = '6px';
+    pre.textContent = data.client_token;
+    const copy = document.createElement('button');
+    copy.className = 'btn sm';
+    copy.textContent = '复制';
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(data.client_token);
+        copy.textContent = '已复制';
+      } catch (e) {
+        copy.textContent = '请手动选择复制';
+      }
+    });
+    box.appendChild(meta);
+    box.appendChild(pre);
+    box.appendChild(copy);
+  } catch (e) {
+    box.textContent = '生成失败：' + e.message;
+  }
 }
 
 async function loadApiKeys(userId) {

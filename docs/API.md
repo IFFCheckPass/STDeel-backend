@@ -36,8 +36,13 @@
 
 ```json
 { "user_id": "u_1", "id": "u_1", "username": "张三", "device_id": "550e8400-...",
-  "platform": "android", "created_at": "2026-10-31T12:00:00Z", "last_active_at": "..." }
+  "platform": "android", "created_at": "2026-10-31T12:00:00Z", "last_active_at": "...",
+  "client_token": "st_xxx" }
 ```
+
+- **仅新建用户时**响应会多一个 `client_token`（明文只出现这一次，库里只存 SHA-256 哈希）。
+  客户端应保存它，后续换机同步 Key 时放在请求头 `X-STDeel-Token` 里。
+  复用已有用户时不会返回令牌（否则知道用户名就能拿令牌）；老用户请在管理台生成。
 
 规则：
 - 先按 `device_id` 查，命中则复用；否则按 `username` 查，命中则复用；都不命中则新建。
@@ -53,6 +58,9 @@
 
 全量覆盖（空数组即清空）。响应 `{ "ok": true, "user_id": "u_1", "count": 1 }`。
 
+鉴权（2026-11 起）：必须带请求头 `X-STDeel-Token: <client_token>`（也兼容 `?client_token=`）。
+未配置令牌 → `403`；令牌不匹配/已轮换 → `401`。
+
 > 落库是**加密**的（2026-11-14 起）：服务端只保存 `cipher`（v1 加密串）+ `prefix`/`suffix`（各 3 位，供展示）
 > + `name`/`enabled`，中间段没有任何明文；主密钥 `api_key.key` 在服务器上（0600）。
 > 客户端请求/响应格式不变，照旧传完整明文 Key。
@@ -61,7 +69,8 @@
 
 返回该用户已保存的 Key 列表（换机同步使用；服务端解密后返回完整值）。
 
-> 该接口按契约**不需要登录**，只靠 `user_id`；因此不要把它当管理接口用。
+> 鉴权（2026-11 起）：必须带请求头 `X-STDeel-Token: <client_token>`（也兼容 `?client_token=`）。
+> 未配置令牌 → `403`；令牌不匹配/已轮换 → `401`。不再只靠可枚举的 `user_id`。
 > 管理台请改用下面的 `GET /users/api-key-masked`（需登录，只给掩码）。
 
 ### GET /users/api-key-masked?user_id=u_1
@@ -315,8 +324,8 @@ upsert 顺序：`(user_id, client_ref)` 命中 → `updated`；否则 `(user_id,
 |---|---|---|
 | 页面 | `/webui`、`/docs`、`/redoc` | `303` 跳到 `/webui/login` |
 | 文档数据 | `/openapi.json` | `401` JSON |
-| 管理端接口 | `GET /users`、`GET /users/stats`、`GET /users/{id}`、`GET /users/{id}/records`、`GET /users/{id}/mastery`、`GET /users/api-key-masked`、`DELETE /users/{id}` | `401` JSON |
-| 客户端接口 | 其余全部（注册、解题记录、答案库、知识点、`GET/PUT /users/api-key`、`/files/upload`、`/healthz`） | 正常放行 |
+| 管理端接口 | `GET /users`、`GET /users/stats`、`GET /users/{id}`、`GET /users/{id}/records`、`GET /users/{id}/mastery`、`GET /users/api-key-masked`、`DELETE /users/{id}`、`POST /users/client-token`、`GET /users/client-token-status`、`GET/PUT/DELETE /answer-library*`、`GET /knowledge/summary` | `401` JSON |
+| 客户端接口 | 其余全部（注册、解题记录、答案库 POST/match、知识点、`/files/upload`、`/healthz`） | 正常放行 |
 
 > 未配置管理密码时，上面这些受保护路径一律拒绝（页面仍跳登录页并提示如何设置，接口返回 `503`）。
 > 首次设置密码可在内网浏览器打开 `/webui` 操作（只允许本机/内网直连，公网来源被拒），
@@ -364,3 +373,31 @@ sudo -u www /www/server/pyporject_evn/3.11.2venv/bin/python \
 
 凭据文件是应用目录下的 `admin_auth.json`（`0600`，不入 git，部署保留），
 改完按 mtime 自动重载，不需要重启服务。
+
+---
+
+## 11. 客户端令牌（2026-11 新增）
+
+用途：给「换机同步 Key」这类敏感客户端接口加 per-user 凭据，替代可枚举的 `user_id`。
+
+### 11.1 获取
+
+- 新建用户：`POST /users/register` 的响应里带 `client_token`（只出现一次）。
+- 已有用户：管理台点该用户的「生成令牌 / 轮换令牌」（`POST /users/client-token?user_id=u_1`，需管理员登录），
+  明文也只显示一次；轮换后旧令牌立即失效。
+
+### 11.2 使用
+
+```http
+GET /users/api-key?user_id=u_1
+X-STDeel-Token: st_xxx
+```
+
+- 缺失且用户未配置令牌 → `403`；令牌错误/已轮换 → `401`。
+- 令牌只影响 `GET/PUT /users/api-key`；其它客户端接口暂不要求（兼容老 App）。
+- 服务端只存 SHA-256 哈希（`users.client_token_hash`），不存明文。
+
+### 11.3 轮换与吊销
+
+- 管理台「轮换令牌」= 生成新的并覆盖旧哈希；旧令牌立即失效。
+- 删除用户即吊销。
